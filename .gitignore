@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local notes and scratch files
+*.local.md
+scratch/
+
+# Never commit credentials — they belong in Script Properties
+# (this is just a reminder; Apps Script files don't export credentials,
+# but if you ever generate a service account key JSON, keep it out of git)
+*.json.key
+service-account*.json
