@@ -67,6 +67,84 @@ const TOPICS = [
 ];
 
 // ---------------------------------------------------------------------------
+// 1B. LOW-QUALITY SOURCE FILTERS
+// ---------------------------------------------------------------------------
+//
+// Plain topic OR-matching lets through more than off-topic noise — it also
+// lets through self-published, non-peer-reviewed content that happens to
+// share your field's vocabulary. This has become a cross-disciplinary
+// problem as it's gotten trivially easy to generate confident-sounding,
+// jargon-heavy "papers" with no institutional review behind them. The
+// filters below catch that category specifically, separately from ordinary
+// topical relevance. Used by relevanceFilter.gs.
+
+// Zenodo (DOI prefix 10.5281) lets anyone register a DOI with zero review.
+// OpenAlex indexes these self-deposits indistinguishably from real journal
+// articles. Crossref-sourced records never carry this prefix (Zenodo
+// registers through DataCite, not Crossref), so this check is safe to apply
+// globally rather than gating it to a specific source.
+//
+// CAVEAT: some fields legitimately use Zenodo for citable software releases,
+// datasets, or conference proceedings archives. If that's common in your
+// field, this default will cost you real results — loosen it (e.g. only
+// flag Zenodo records that ALSO match a pattern below) or remove it entirely.
+const BLOCKED_DOI_PREFIXES = [
+  '10.5281/zenodo',
+];
+
+// Authors who've repeatedly self-published non-peer-reviewed content that
+// matches your TOPICS on vocabulary alone. Matched against lowercase author
+// strings. This list ships EMPTY — it's meant to be built up from what you
+// actually observe in your own runs, not seeded preemptively, since a wrong
+// entry here silently and permanently drops everything by that name with
+// no record in the Sheet. Before adding someone, weigh:
+//   - Collision risk: is the name distinctive enough that an unrelated
+//     legitimate academic sharing it is unlikely? Prefer full "last, first"
+//     over a bare surname for this reason.
+//   - Redundancy: is this person's observed bad output already caught by
+//     BLOCKED_DOI_PREFIXES or LOW_QUALITY_TEXT_PATTERNS below? If so, an
+//     author entry is only doing work against their *future*, not-yet-seen
+//     output — worth it for a distinctive name, questionable for a common
+//     one.
+// Note when/why each entry was added, same convention as AMBIGUOUS_TOPICS.
+const AUTHOR_BLOCKLIST = [
+  // 'surname, firstname', // YYYY-MM-DD: what you observed
+];
+
+// Title/abstract patterns strongly associated with self-published, non-
+// peer-reviewed content rather than field scholarship. These four are
+// discipline-agnostic vanity-press/LLM-slop tells observed in practice —
+// keep them as sensible defaults, but treat them the same as everything
+// else here: narrow and literal, meant to catch a specific tell, not to
+// second-guess unconventional academic ideas.
+const LOW_QUALITY_TEXT_PATTERNS = [
+  /™/,                               // trademarked jargon in an academic title
+  /book [ivxlcdm]+ of [ivxlcdm]+/i,   // serialized self-published book volumes
+  /single[- ]premise/i,               // grand-unifying-theory framing
+  /here is the abstract/i,           // leaked copy-paste instructions from an LLM-assisted draft
+];
+
+// Some TOPICS are pure theory/mechanism terms that, on their own, tend to
+// attract content unrelated to your field's actual applied questions —
+// analogous to AMBIGUOUS_TOPICS above, but stricter: an AMBIGUOUS_TOPICS
+// term counts if paired with ANY other matched topic, while a term in this
+// list only counts if paired with a topic OUTSIDE this list. This matters
+// because self-published "grand unified theory" content tends to pack in
+// SEVERAL pure-theory terms at once (e.g., three or four mechanism buzzwords
+// in one abstract, no applied content) — pairing two theory-only terms with
+// each other would satisfy AMBIGUOUS_TOPICS's weaker rule but shouldn't
+// satisfy relevance on its own.
+//
+// Ships EMPTY by default — hasAppliedTopicMatch() in relevanceFilter.gs is a
+// no-op until you populate this. Fill it in only after observing your own
+// version of the pattern: a cluster of your field's theory/mechanism terms
+// co-occurring in self-published pieces with none of your field's applied
+// terms present.
+const THEORY_ONLY_TOPICS = [
+  // 'mechanism-only term', // requires pairing with a topic NOT in this list
+];
+
+// ---------------------------------------------------------------------------
 // 2. SOURCE TOGGLES
 // ---------------------------------------------------------------------------
 //

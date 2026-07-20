@@ -24,6 +24,19 @@
  * remains the default for everything else. Add a term here only after
  * observing it produce a genuine off-topic false positive in a real run,
  * not preemptively.
+ *
+ * LOW-QUALITY SOURCES: plain topic OR-matching also lets through self-
+ * published, non-peer-reviewed content that happens to share your field's
+ * vocabulary. Two mechanisms address this, both configured in config.gs
+ * and both empty/off by default until you populate them for your field:
+ *   - isLowQualitySource() rejects known-bad DOI prefixes (Zenodo, on by
+ *     default — see caveat in config.gs), blocklisted repeat-offender
+ *     authors, and vanity-press text patterns.
+ *   - THEORY_ONLY_TOPICS + hasAppliedTopicMatch() require a pure theory/
+ *     mechanism topic match to be paired with a topic OUTSIDE that list.
+ *     Pairing two theory-only topics with each other does NOT satisfy
+ *     this — that combination is exactly what self-published "unified
+ *     theory" content tends to pack in.
  */
 
 // Topics that need a second, independent TOPICS match to count.
@@ -54,9 +67,13 @@ function checkRelevance(paper) {
     }
   });
 
-  const isRelevant = matchedTopics.some(function(topic) {
+  const hasUnambiguousMatch = matchedTopics.some(function(topic) {
     return isUnambiguousMatch(topic, matchedTopics);
   });
+
+  const isRelevant = hasUnambiguousMatch
+    && hasAppliedTopicMatch(matchedTopics)
+    && !isLowQualitySource(paper);
 
   return {
     isRelevant: isRelevant,
@@ -81,6 +98,55 @@ function isUnambiguousMatch(topic, allMatchedTopics) {
   return allMatchedTopics.some(function(other) {
     return other !== topic;
   });
+}
+
+/**
+ * True if the paper matches at least one TOPICS term that is NOT in
+ * THEORY_ONLY_TOPICS (config.gs). A paper matching ONLY theory-only terms —
+ * however many, however they pair with each other — does not count. See
+ * THEORY_ONLY_TOPICS's comment in config.gs for why. Ships as a no-op
+ * (always returns true) until THEORY_ONLY_TOPICS is populated.
+ *
+ * @param {string[]} matchedTopics
+ * @return {boolean}
+ */
+function hasAppliedTopicMatch(matchedTopics) {
+  return matchedTopics.some(function(topic) {
+    return THEORY_ONLY_TOPICS.indexOf(topic) === -1;
+  });
+}
+
+/**
+ * True if the paper looks like self-published, non-peer-reviewed content
+ * rather than field scholarship: a Zenodo self-deposit, a blocklisted
+ * repeat-offender author, or a title/abstract matching one of
+ * LOW_QUALITY_TEXT_PATTERNS (all configured in config.gs).
+ *
+ * @param {NormalizedPaper} paper
+ * @return {boolean}
+ */
+function isLowQualitySource(paper) {
+  const doi = (paper.doi || '').toLowerCase();
+  const isBlockedDoi = BLOCKED_DOI_PREFIXES.some(function(prefix) {
+    return doi.indexOf(prefix) === 0;
+  });
+  if (isBlockedDoi) return true;
+
+  // paper.authors may be a joined string or an array depending on what
+  // normalize.gs produced — handle either defensively.
+  const authorText = [].concat(paper.authors || '').join(' ').toLowerCase();
+  const isBlockedAuthor = AUTHOR_BLOCKLIST.some(function(blocked) {
+    return authorText.indexOf(blocked) !== -1;
+  });
+  if (isBlockedAuthor) return true;
+
+  const text = (paper.title + ' ' + paper.abstract).toLowerCase();
+  const matchesLowQualityPattern = LOW_QUALITY_TEXT_PATTERNS.some(function(pattern) {
+    return pattern.test(text);
+  });
+  if (matchesLowQualityPattern) return true;
+
+  return false;
 }
 
 /**
