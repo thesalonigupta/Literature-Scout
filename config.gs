@@ -84,12 +84,20 @@ const TOPICS = [
 // registers through DataCite, not Crossref), so this check is safe to apply
 // globally rather than gating it to a specific source.
 //
-// CAVEAT: some fields legitimately use Zenodo for citable software releases,
-// datasets, or conference proceedings archives. If that's common in your
-// field, this default will cost you real results — loosen it (e.g. only
-// flag Zenodo records that ALSO match a pattern below) or remove it entirely.
+// Mendeley Data (DOI prefix 10.17632) is the same profile — a no-review
+// self-deposit repository, mostly for raw datasets rather than papers.
+// Observed in practice: a keyword that legitimately matches your field can
+// also surface a data-dump entry with no real abstract (e.g. "MINITAB
+// FILES ON X" or "X Extracted Data 2023-2025") rather than an actual paper.
+//
+// CAVEAT (applies to both prefixes): some fields legitimately use Zenodo
+// or Mendeley Data for citable software releases, datasets, or conference
+// proceedings archives. If that's common in your field, these defaults
+// will cost you real results — loosen them (e.g. only flag records that
+// ALSO match a pattern below) or remove them entirely.
 const BLOCKED_DOI_PREFIXES = [
   '10.5281/zenodo',
+  '10.17632', // Mendeley Data
 ];
 
 // Authors who've repeatedly self-published non-peer-reviewed content that

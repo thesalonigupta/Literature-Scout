@@ -2,6 +2,8 @@
 
 A Google Apps Script tool that monitors four academic sources — arXiv, Crossref, PhilPapers, and OpenAlex — for new papers matching your research topics, logs relevant results to a Google Sheet, and optionally posts them to a Slack channel. It runs entirely inside Google's infrastructure with no installations, servers, or paid subscriptions required beyond two free API credentials.
 
+Two more sources (PubMed, bioRxiv) are available as opt-in plug-ins in `sources/optional/` for fields that overlap biology, medicine, or life sciences — see `SOURCES.md` for what's included, what was evaluated and rejected, and how to wire in something else your field needs that isn't listed here.
+
 ---
 
 ## Quick Start
@@ -20,7 +22,7 @@ Everything else is covered in the full setup below.
 ### Part 1 — One-Time Setup
 
 **Step 1: Get the files**
-You should have a folder containing 11 files ending in `.gs`, plus one file named `appsscript.json`. The `.gs` files are: `config`, `normalize`, `dedupe`, `relevanceFilter`, `writeToSheet`, `fetchArxiv`, `fetchCrossref`, `fetchPhilPapers`, `fetchOpenAlex`, `postToSlack`, `main`.
+You should have a folder containing 11 files ending in `.gs`, plus one file named `appsscript.json`. The `.gs` files are: `config`, `normalize`, `dedupe`, `relevanceFilter`, `writeToSheet`, `fetchArxiv`, `fetchCrossref`, `fetchPhilPapers`, `fetchOpenAlex`, `postToSlack`, `main`. (`sources/optional/` holds additional opt-in source files — leave those out of this step unless you already know you want one; each has its own wiring instructions in its header. See `SOURCES.md`.)
 
 **Step 2: Create a new Google Sheet**
 Go to sheets.google.com and create a new blank spreadsheet. Name it something recognizable, such as "Literature Scout."
@@ -116,11 +118,32 @@ Two rules govern what goes into `AMBIGUOUS_TOPICS`. First, add a term only after
 
 ## Credential and Ownership Notes
 
+**Credential and Ownership Notes** — the short version is below; see
+`OWNERSHIP.md` for the full transfer checklist.
+
 **Script Properties** — the correct place for both credentials (`OPENALEX_API_KEY`, `SLACK_WEBHOOK_URL`). They belong in Script Properties at runtime; they should also be stored in your team's shared password manager so they are recoverable if the project ever needs to be rebuilt from scratch.
 
 **Apps Script trigger ownership** — time-based triggers run as the account that created them. If that account loses access, the trigger stops silently. When transferring ownership of the Sheet, recreate the trigger under the new owner — it does not carry over automatically.
 
 **Sharing** — share the Sheet with at least one other person as Editor. Editors can open Apps Script, view and run every function, and read Script Properties, which means someone else can operate the tool even before a formal handoff.
+
+---
+
+## Further Reading
+
+- **`SOURCES.md`** — which sources are wired in by default, which are
+  optional plug-ins (`sources/optional/`), which were evaluated and
+  rejected and why, and a checklist for evaluating any new source you're
+  considering adding.
+- **`CASE_STUDY.md`** — a real, worked sequence of topic-list tuning
+  decisions across several runs: a term that flooded with an unrelated
+  field's content, terms that drifted into `AMBIGUOUS_TOPICS` one at a
+  time as false positives were actually observed, and a low-quality-
+  source pattern that showed up with a new source. Useful as a concrete
+  companion to the more abstract rules in "Adapting This to Your Field"
+  above.
+- **`OWNERSHIP.md`** — the full account-transfer checklist referenced
+  above.
 
 ---
 
