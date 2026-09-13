@@ -22,7 +22,7 @@ Everything else is covered in the full setup below.
 ### Part 1 — One-Time Setup
 
 **Step 1: Get the files**
-You should have a folder containing 11 files ending in `.gs`, plus one file named `appsscript.json`. The `.gs` files are: `config`, `normalize`, `dedupe`, `relevanceFilter`, `writeToSheet`, `fetchArxiv`, `fetchCrossref`, `fetchPhilPapers`, `fetchOpenAlex`, `postToSlack`, `main`. (`sources/optional/` holds additional opt-in source files — leave those out of this step unless you already know you want one; each has its own wiring instructions in its header. See `SOURCES.md`.)
+You should have a folder containing 12 files ending in `.gs`, plus one file named `appsscript.json`. The `.gs` files are: `config`, `normalize`, `dedupe`, `relevanceFilter`, `relevanceScore`, `writeToSheet`, `fetchArxiv`, `fetchCrossref`, `fetchPhilPapers`, `fetchOpenAlex`, `postToSlack`, `main`. (`sources/optional/` holds additional opt-in source files — leave those out of this step unless you already know you want one; each has its own wiring instructions in its header. See `SOURCES.md`.)
 
 **Step 2: Create a new Google Sheet**
 Go to sheets.google.com and create a new blank spreadsheet. Name it something recognizable, such as "Literature Scout."
@@ -30,7 +30,7 @@ Go to sheets.google.com and create a new blank spreadsheet. Name it something re
 **Step 3: Open the Apps Script editor**
 In the Sheet, go to **Extensions → Apps Script**. This opens a code editor tied to the Sheet.
 
-**Step 4: Add all 11 code files**
+**Step 4: Add all 12 code files**
 Apps Script starts with one empty file called `Code.gs`. Rename it to `config` (double-click the filename), delete its placeholder text, paste in the contents of `config.gs`, and save (Cmd/Ctrl+S). Repeat for each remaining `.gs` file: click the `+` next to "Files" in the sidebar, choose Script, name it to match the filename without the `.gs` extension, and paste in its contents. Order does not matter.
 
 **Step 5: Add the manifest file**
