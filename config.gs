@@ -8,11 +8,18 @@
  * values, not logic — change the lists, not the code around them.
  *
  * Sections:
- *   1. Relevance topics (used by relevanceFilter.gs)
- *   2. Source toggles (turn a fetch source on/off without deleting code)
- *   3. Sheet tab names
- *   4. Source-specific settings (date windows, max results, etc.)
- *   5. Slack settings (used by postToSlack.gs)
+ *   1.  Relevance topics (used by relevanceFilter.gs)
+ *   1B. Topic tiers (used by relevanceScore.gs for ranking)
+ *   1C. Gated topics (terms that need corroborating vocabulary)
+ *   1D. Field corroboration vocabulary (used by the gate and the ranker)
+ *   1E. Low-quality source filters
+ *   1F. Boilerplate-context exclusion
+ *   1G. Filter toggles
+ *   1H. Ranking / scoring settings
+ *   2.  Source toggles
+ *   3.  Sheet tab names
+ *   4.  Source-specific settings
+ *   5.  Slack settings
  */
 
 // ---------------------------------------------------------------------------
@@ -25,9 +32,9 @@
 // Why OR and not AND: the Scout is meant to cast a wide net. Catching a few
 // borderline papers costs a few seconds of skimming; missing a genuinely
 // relevant paper because it didn't pair two keywords costs you the paper
-// entirely. A downstream triage or relevance-ranking step can do finer-
-// grained scoring against your active research questions — this filter only
-// needs to be "good enough" to keep obvious noise out.
+// entirely. Now that papers are also RANKED (see section 1H), the cost of a
+// borderline catch is even lower — it lands in the Context tier at the bottom
+// of the sheet rather than competing for attention with the good stuff.
 //
 // Start from a vocabulary source your field already maintains (a glossary,
 // a review paper's keyword list, a syllabus reading list) rather than
@@ -67,7 +74,114 @@ const TOPICS = [
 ];
 
 // ---------------------------------------------------------------------------
-// 1B. LOW-QUALITY SOURCE FILTERS
+// 1B. TOPIC TIERS
+// ---------------------------------------------------------------------------
+//
+// Every TOPICS term belongs to exactly one of three tiers. The tier decides
+// how many points a match is worth when relevanceScore.gs ranks a paper.
+// This is the main dial for tuning what floats to the top of the Digest.
+//
+//   CORE       — the term IS your field's central subject matter. A single
+//                match is a strong signal on its own.
+//   SUPPORTING — genuinely relevant, but the term also appears routinely in
+//                adjacent literature where it isn't the main focus.
+//   CONTEXT    — useful background at most. Terminology that could lead to
+//                adjacent papers, but rarely to must-read ones.
+//
+// Anything in TOPICS but missing from all three lists below is treated as
+// SUPPORTING (a safe middle default), and logged once per run so the
+// omission gets noticed. Run validateTopicTiers() from the Apps Script
+// editor after editing.
+//
+// The tier lists below match the illustrative epidemiology placeholder TOPICS
+// above. Replace them entirely when you replace TOPICS.
+
+const TOPIC_TIER_CORE = [
+  'transmission dynamics',
+  'infection fatality rate',
+  'seroprevalence',
+  'incubation period',
+  'antimicrobial resistance',
+  'basic reproduction number',
+  'zoonotic spillover',
+];
+
+const TOPIC_TIER_SUPPORTING = [
+  'herd immunity threshold',
+  'contact tracing',
+];
+
+const TOPIC_TIER_CONTEXT = [
+  'emergence',
+  'spillover',
+];
+
+// ---------------------------------------------------------------------------
+// 1C. GATED TOPICS
+// ---------------------------------------------------------------------------
+//
+// Some TOPICS terms are standard vocabulary in fields unrelated to yours.
+// A "gated" topic only counts toward relevance if the paper ALSO either:
+//   (a) contains at least one GATE_CORROBORATION_TERM in its title/abstract,
+//       or
+//   (b) matches some other, non-gated TOPICS term.
+//
+// Use this when AMBIGUOUS_TOPICS isn't strong enough — ambiguous terms only
+// require any second topic match, but gated terms also accept corroboration
+// from specific vocabulary (option a above), which lets you keep papers that
+// discuss your topic through related language even when they only match
+// one TOPICS entry.
+//
+// Ships EMPTY by default. Populate from your own run observations.
+const GATED_TOPICS = [
+  // 'some term',  // YYYY-MM-DD: observed generating false positives in
+  //               // [field] unrelated to yours; needs corroboration
+];
+
+const GATE_CORROBORATION_TERMS = [
+  // Words that, if found in a paper's title or abstract, satisfy the gate
+  // for any term in GATED_TOPICS. Use vocabulary strongly associated with
+  // your field's subject matter — not general academic words.
+  //
+  // Example (for an epidemiology tool):
+  // 'epidemic', 'pandemic', 'outbreak', 'pathogen', 'surveillance'
+];
+
+// ---------------------------------------------------------------------------
+// 1D. FIELD CORROBORATION VOCABULARY
+// ---------------------------------------------------------------------------
+//
+// Words that indicate a paper is genuinely about your research area, as
+// opposed to using field vocabulary incidentally. Used by relevanceScore.gs
+// as a corroboration bonus: a paper matching a topic once in a passing
+// sentence scores lower than one that also uses several of these words.
+//
+// Matched as whole words, case-insensitive. Keep this list specific —
+// adding common words (e.g. "study", "analysis", "data") makes the bonus
+// meaningless because nearly everything scores it.
+//
+// The list below matches the illustrative epidemiology placeholder. Replace
+// with vocabulary central to your own field's subject matter.
+const MIND_VOCAB = [
+  'epidemic',
+  'pandemic',
+  'outbreak',
+  'pathogen',
+  'disease',
+  'infection',
+  'transmission',
+  'mortality',
+  'morbidity',
+  'surveillance',
+  'incidence',
+  'prevalence',
+  'vaccine',
+  'immunity',
+  'host',
+];
+
+// ---------------------------------------------------------------------------
+// 1E. LOW-QUALITY SOURCE FILTERS
 // ---------------------------------------------------------------------------
 //
 // Plain topic OR-matching lets through more than off-topic noise — it also
@@ -84,20 +198,12 @@ const TOPICS = [
 // registers through DataCite, not Crossref), so this check is safe to apply
 // globally rather than gating it to a specific source.
 //
-// Mendeley Data (DOI prefix 10.17632) is the same profile — a no-review
-// self-deposit repository, mostly for raw datasets rather than papers.
-// Observed in practice: a keyword that legitimately matches your field can
-// also surface a data-dump entry with no real abstract (e.g. "MINITAB
-// FILES ON X" or "X Extracted Data 2023-2025") rather than an actual paper.
-//
-// CAVEAT (applies to both prefixes): some fields legitimately use Zenodo
-// or Mendeley Data for citable software releases, datasets, or conference
-// proceedings archives. If that's common in your field, these defaults
-// will cost you real results — loosen them (e.g. only flag records that
-// ALSO match a pattern below) or remove them entirely.
+// CAVEAT: some fields legitimately use Zenodo for citable software releases,
+// datasets, or conference proceedings archives. If that's common in your
+// field, this default will cost you real results — remove it or narrow it
+// (e.g. only flag records that ALSO match a LOW_QUALITY_TEXT_PATTERNS entry).
 const BLOCKED_DOI_PREFIXES = [
   '10.5281/zenodo',
-  '10.17632', // Mendeley Data
 ];
 
 // Authors who've repeatedly self-published non-peer-reviewed content that
@@ -150,6 +256,125 @@ const LOW_QUALITY_TEXT_PATTERNS = [
 // terms present.
 const THEORY_ONLY_TOPICS = [
   // 'mechanism-only term', // requires pairing with a topic NOT in this list
+];
+
+// ---------------------------------------------------------------------------
+// 1F. BOILERPLATE-CONTEXT EXCLUSION
+// ---------------------------------------------------------------------------
+//
+// Catches papers that only match TOPICS because of boilerplate sentences
+// (ethics declarations, compliance statements, standard methodology
+// disclaimers) rather than because the paper is actually about your field.
+// A match is rejected only when ALL of: (a) the ONLY TOPICS matched are in
+// BOILERPLATE_CONTEXT_TOPICS, AND (b) the text contains one of
+// BOILERPLATE_CONTEXT_PATTERNS, AND (c) no field-core language is present.
+//
+// Ships EMPTY by default. Populate if you observe this pattern.
+const BOILERPLATE_CONTEXT_TOPICS = [
+  // Topics that routinely appear as boilerplate in papers from adjacent
+  // fields (e.g. ethics declarations, method disclaimers).
+];
+
+const BOILERPLATE_CONTEXT_PATTERNS = [
+  // Regex patterns that identify boilerplate sentences.
+];
+
+// ---------------------------------------------------------------------------
+// 1G. FILTER TOGGLES
+// ---------------------------------------------------------------------------
+//
+// Each of these switches one rejection rule on or off. Everything rejected is
+// gone from the Sheet with no record, so these are the highest-consequence
+// settings in this file. Flip one, run the Scout, and check the Run Log's
+// "Relevant After Filter" count before and after.
+const FILTER_TOGGLES = {
+
+  // Reject papers whose ONLY matched topics are in THEORY_ONLY_TOPICS.
+  // The main defence against self-published "grand unified theory" content
+  // that packs in several mechanism buzzwords with no applied content.
+  // Set to false if you'd rather see those papers and let the Context tier
+  // sort them to the bottom.
+  rejectTheoryOnlyPapers: true,
+
+  // Reject papers whose only matched topics are context-tier terms.
+  // Off by default — context-tier papers are de-prioritised by ranking
+  // rather than deleted, which keeps them available without cluttering
+  // the top of the Digest. Enable if you find context-tier papers are
+  // generating too much noise even at the bottom of the sheet.
+  rejectPolicyOnlyPapers: false,
+
+  // Require gated topics (section 1C) to be corroborated. Leave on.
+  enforceGatedTopics: true,
+};
+
+// ---------------------------------------------------------------------------
+// 1H. RANKING / SCORING SETTINGS
+// ---------------------------------------------------------------------------
+//
+// Used by relevanceScore.gs. Every paper that survives the filter gets a
+// numeric score and a tier, both written to the Digest sheet so the sheet can
+// be sorted by relevance instead of only by date.
+//
+// How the score is built, in plain terms:
+//   - Each distinct matched topic contributes points based on its tier.
+//   - A topic that appears in the TITLE counts double (titles are a much
+//     stronger signal of subject matter than abstracts).
+//   - Matching several core/supporting topics adds a small breadth bonus.
+//   - Field corroboration vocabulary words (section 1D) add a bonus.
+//   - Preprint/self-deposit DOIs and missing abstracts subtract a little.
+//
+// To make the Digest more selective, raise coreThreshold. To see more in the
+// top tier, lower it. Nothing is ever deleted by these numbers.
+const RELEVANCE_SCORING = {
+
+  // Points per distinct matched topic, by tier (section 1B).
+  topicPoints: {
+    core: 15,
+    supporting: 6,
+    context: 2,
+  },
+
+  // A topic found in the title is worth this many times its normal points.
+  titleMultiplier: 2,
+
+  // Small bonus for matching several DIFFERENT core/supporting topics.
+  // Deliberately excludes context-tier topics: rewarding breadth there would
+  // reward exactly the "list every theory/mechanism" pattern that marks
+  // self-published work.
+  breadthBonusPerExtraTopic: 2,
+  breadthBonusCap: 6,
+
+  // Bonus per DISTINCT field-corroboration vocabulary word found (section 1D).
+  mindVocabBonusPerTerm: 2,
+  mindVocabBonusCap: 8,
+
+  // Penalties.
+  noAbstractPenalty: 3,   // can't judge a paper we can't read
+  preprintPenalty: 4,     // self-deposit repositories, see PREPRINT_DOI_PREFIXES
+
+  // Tier cut-offs. A paper scores into the highest tier it clears.
+  coreThreshold: 18,
+  adjacentThreshold: 10,
+
+  // Guard rails, applied AFTER the thresholds:
+  //   - A paper that matched no core or supporting topic can never reach the
+  //     Core tier, however many context-tier terms it stacked up.
+  //   - A paper with a real abstract needs at least this many distinct
+  //     field-corroboration vocabulary words to reach Core. This stops a
+  //     title pun or a one-line mention from topping the sheet.
+  minMindVocabForCore: 2,
+};
+
+// DOI prefixes for repositories that publish without peer review. Unlike
+// BLOCKED_DOI_PREFIXES these are NOT rejected — they just lose a few points,
+// because relevant preprints legitimately appear on all of them.
+const PREPRINT_DOI_PREFIXES = [
+  '10.6084',    // figshare
+  '10.17605',   // OSF
+  '10.31235',   // SocArXiv (OSF preprints)
+  '10.13140',   // ResearchGate
+  '10.17613',   // Humanities Commons
+  '10.33774',   // Cambridge Open Engage
 ];
 
 // ---------------------------------------------------------------------------
@@ -253,4 +478,11 @@ const SLACK = {
   // (avoids spamming the channel and Slack's per-webhook rate limit on a
   // first run or after a long gap between runs).
   maxIndividualPosts: 12,
+
+  // Lowest tier that gets its own individual Slack message. Papers below
+  // this still go in the Sheet and still appear in the summary count —
+  // they just don't each ping the channel.
+  // One of: 'core', 'adjacent', 'context'.
+  // Defaults to 'context' so everything posts until you've tuned your tiers.
+  minTierForIndividualPosts: 'context',
 };

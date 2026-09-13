@@ -6,6 +6,15 @@
  * Slack and the Sheet as two views of the exact same data — nothing is
  * ever posted to Slack that isn't also a row in Digest.
  *
+ * Papers arrive here already scored and sorted by relevanceScore.gs, so
+ * the channel reads best-first. Two behaviours follow from that:
+ *   - each message shows the paper's tier, so a reader can tell at a glance
+ *     whether it's worth opening;
+ *   - papers below SLACK.minTierForIndividualPosts (config.gs) don't get
+ *     their own message. They are still written to the Sheet and still
+ *     counted in the channel, just not pinged one by one. The Sheet, not
+ *     Slack, is the complete record.
+ *
  * SETUP (one-time):
  *   1. In Slack: go to api.slack.com/apps > Create New App > From Scratch.
  *      Name it (e.g. "Literature Scout") and pick your workspace.
@@ -29,9 +38,21 @@
  */
 
 /**
+ * Relevance tiers ranked low to high, for comparing against
+ * SLACK.minTierForIndividualPosts. Kept here rather than in config.gs
+ * because it's an ordering fact about the tiers, not a setting anyone
+ * should need to change.
+ */
+const TIER_RANK = {
+  context: 1,
+  adjacent: 2,
+  core: 3,
+};
+
+/**
  * Posts one Slack message per paper in `papers`. Called from main.gs
- * (Step 5) after appendPapersToDigest(), using the same relevantNewPapers
- * list — so a Slack post and a Sheet row always correspond 1:1.
+ * (Step 5) after appendPapersToDigest(), using the same ranked list — so a
+ * Slack post and a Sheet row always correspond.
  *
  * Individual post failures (bad webhook response, transient network
  * error) are caught per-paper and returned as error strings rather than
@@ -40,8 +61,10 @@
  * single failing source in main.gs.
  *
  * @param {NormalizedPaper[]} papers - Each must already have
- *        `matchedTopics` attached (see relevanceFilter.gs), same
- *        precondition as appendPapersToDigest().
+ *        `matchedTopics` attached (see relevanceFilter.gs), and normally
+ *        `relevanceTier` / `relevanceScore` too (see relevanceScore.gs).
+ *        Papers with no tier are treated as postable, so this still works
+ *        if the scoring step is ever skipped.
  * @return {string[]} Error messages, if any. Empty array means all posts
  *         (or the digest summary) succeeded, or Slack posting is disabled.
  */
@@ -79,7 +102,10 @@ function postPapersToSlack(papers) {
     return errors;
   }
 
-  papers.forEach(function(paper) {
+  const postable = papers.filter(isPostableTier);
+  const heldBack = papers.length - postable.length;
+
+  postable.forEach(function(paper) {
     try {
       postSlackMessage(webhookUrl, buildPaperBlocks(paper));
     } catch (err) {
@@ -89,7 +115,34 @@ function postPapersToSlack(papers) {
     }
   });
 
+  // One short line so the channel knows the lower-tier papers exist,
+  // instead of them vanishing from view entirely.
+  if (heldBack > 0) {
+    try {
+      postSlackMessage(webhookUrl, buildHeldBackBlocks(heldBack));
+    } catch (err) {
+      errors.push('Slack held-back-summary post failed: ' + err);
+    }
+  }
+
   return errors;
+}
+
+/**
+ * True if a paper's tier is at or above SLACK.minTierForIndividualPosts.
+ * Papers with no tier at all (scoring skipped, or a manual test message)
+ * are always postable — the absence of a score shouldn't silence a paper.
+ *
+ * @param {NormalizedPaper} paper
+ * @return {boolean}
+ */
+function isPostableTier(paper) {
+  if (!paper.relevanceTier) return true;
+
+  const minimum = TIER_RANK[SLACK.minTierForIndividualPosts] || TIER_RANK.context;
+  const actual = TIER_RANK[paper.relevanceTier] || TIER_RANK.context;
+
+  return actual >= minimum;
 }
 
 /**
@@ -167,18 +220,23 @@ function postSlackMessage(webhookUrl, blocks) {
 /**
  * Builds the Block Kit blocks for a single paper's Slack message.
  * One message per paper, formatted so a reader can decide "read this now"
- * vs. "skip" without leaving Slack: title (linked), authors/source/date,
- * matched topics, and an abstract snippet.
+ * vs. "skip" without leaving Slack: title (linked), tier, authors/source/
+ * date, matched topics, and an abstract snippet.
  *
  * @param {NormalizedPaper} paper - Must have `matchedTopics` attached.
  * @return {Object[]}
  */
 function buildPaperBlocks(paper) {
-  const metaLine = [
-    paper.source,
-    paper.publishedDate,
-    paper.authors || 'Authors not listed',
-  ].filter(Boolean).join(' · ');
+  const metaParts = [];
+
+  if (paper.relevanceTier) {
+    metaParts.push(formatTierLabel(paper.relevanceTier, paper.relevanceScore));
+  }
+  metaParts.push(paper.source);
+  metaParts.push(paper.publishedDate);
+  metaParts.push(paper.authors || 'Authors not listed');
+
+  const metaLine = metaParts.filter(Boolean).join(' · ');
 
   const blocks = [
     {
@@ -209,7 +267,7 @@ function buildPaperBlocks(paper) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: slackEscape(truncateAbstract(paper.abstract)),
+        text: slackEscape(truncateAbstractForSlack(paper.abstract)),
       },
     });
   }
@@ -220,16 +278,39 @@ function buildPaperBlocks(paper) {
 }
 
 /**
+ * Renders a tier as a short human label for the message's context line.
+ *
+ * @param {string} tier
+ * @param {number=} score
+ * @return {string}
+ */
+function formatTierLabel(tier, score) {
+  const labels = {
+    core: 'Core',
+    adjacent: 'Adjacent',
+    context: 'Context',
+  };
+  const label = labels[tier] || tier;
+  return typeof score === 'number' ? label + ' (' + score + ')' : label;
+}
+
+/**
  * Truncates an abstract to a Slack-friendly length. Keeps individual
  * paper messages scannable, and — together with buildDigestSummaryBlocks'
  * own length handling — keeps every block safely under Slack's
  * 3000-character-per-block limit even for papers with long abstracts.
  *
+ * Named truncateAbstractForSlack rather than truncateAbstract because
+ * writeToSheet.gs defines a function of that name too, and Apps Script puts
+ * every file in one shared global scope — so one would silently override the
+ * other depending on file load order. Both do the same thing; the distinct
+ * names let both survive.
+ *
  * @param {string} abstract
  * @param {number} [maxLength=400]
  * @return {string}
  */
-function truncateAbstract(abstract, maxLength) {
+function truncateAbstractForSlack(abstract, maxLength) {
   const limit = maxLength || 400;
   const text = String(abstract || '').trim();
   if (text.length <= limit) return text;
@@ -237,9 +318,35 @@ function truncateAbstract(abstract, maxLength) {
 }
 
 /**
+ * A single short message noting how many lower-tier papers went to the
+ * Sheet without their own Slack post.
+ *
+ * @param {number} count
+ * @return {Object[]}
+ */
+function buildHeldBackBlocks(count) {
+  const sheetUrl = SpreadsheetApp.getActiveSpreadsheet().getUrl();
+  const plural = count === 1 ? 'paper' : 'papers';
+
+  return [
+    {
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: '_' + count + ' lower-relevance ' + plural + ' also went to the ' +
+          '<' + sheetUrl + '|Digest sheet> without a post here._',
+      }],
+    },
+  ];
+}
+
+/**
  * Builds a single summary message used when a run produces more new
  * papers than SLACK.maxIndividualPosts — points readers at the Sheet
  * instead of listing every paper inline.
+ *
+ * Papers arrive here already sorted best-first, so the capped list below
+ * shows the most relevant ones rather than an arbitrary slice.
  *
  * @param {NormalizedPaper[]} papers
  * @return {Object[]}
@@ -258,7 +365,8 @@ function buildDigestSummaryBlocks(papers) {
   const remainingCount = papers.length - listedPapers.length;
 
   let listText = listedPapers.map(function(paper) {
-    return '• <' + paper.link + '|' + slackEscapeLinkText(paper.title) + '> (' + paper.source + ')';
+    const tier = paper.relevanceTier ? formatTierLabel(paper.relevanceTier) + ' · ' : '';
+    return '• ' + tier + '<' + paper.link + '|' + slackEscapeLinkText(paper.title) + '> (' + paper.source + ')';
   }).join('\n');
 
   if (remainingCount > 0) {
@@ -280,8 +388,9 @@ function buildDigestSummaryBlocks(papers) {
         type: 'mrkdwn',
         text: '*' + papers.length + ' new papers* matched your topics in this run — ' +
           'that\'s more than usual, so here\'s one summary instead of ' +
-          papers.length + ' separate messages. Full details, including ' +
-          'matched topics and abstracts, are in the <' + sheetUrl + '|Digest sheet>.',
+          papers.length + ' separate messages. Most relevant first; full ' +
+          'details, including tiers, matched topics and abstracts, are in ' +
+          'the <' + sheetUrl + '|Digest sheet>.',
       },
     },
     {
