@@ -11,7 +11,7 @@ Two more sources (PubMed, bioRxiv) are available as opt-in plug-ins in `sources/
 1. Create a new Google Sheet, open **Extensions → Apps Script**, and paste each `.gs` file into its own script file.
 2. Add `appsscript.json` via Project Settings → Show manifest file.
 3. Store your two credentials in Script Properties (see Steps 6–7 in Setup below): `OPENALEX_API_KEY` and, later, `SLACK_WEBHOOK_URL`.
-4. Edit `config.gs`: replace the placeholder topic list with your own research vocabulary and set your Crossref contact email. Then run `setupDigestSheet`, followed by `testFetchAllSourcesWithoutWriting`.
+4. Edit `config.gs`: replace the placeholder topic list with your own research vocabulary and set your Crossref contact email. Then run `setupDigestSheet` and `setupRemovedSheet`, followed by `testFetchAllSourcesWithoutWriting`.
 
 Everything else is covered in the full setup below.
 
@@ -50,7 +50,7 @@ Open `config.gs` and make three changes before running anything:
 - Under `SOURCE_SETTINGS.arxiv`, replace the placeholder `categories` with the arXiv category codes most relevant to your field. The full taxonomy is at arxiv.org/category_taxonomy. This is the one setting that has no universal default — you must change it.
 
 **Step 9: Create the Digest sheet**
-In the function dropdown at the top of the editor, select `setupDigestSheet` and click Run (▷). The first time you run anything, Google will ask you to authorize the script — choose your account, click "Advanced," then "Go to [project name] (unsafe)," then "Allow." This is normal for any script you create yourself. After it runs, check your Sheet: a new tab called Digest should exist with column headers.
+In the function dropdown at the top of the editor, select `setupDigestSheet` and click Run (▷). The first time you run anything, Google will ask you to authorize the script — choose your account, click "Advanced," then "Go to [project name] (unsafe)," then "Allow." This is normal for any script you create yourself. After it runs, check your Sheet: a new tab called Digest should exist with column headers. Then select `setupRemovedSheet` and run it too — that creates the Removed tab, which is what keeps rejected papers from reappearing (see "Rejecting papers" below).
 
 **Step 10: Set up Slack notifications (optional)**
 Slack posting is off by default. Do this step when you are ready to have new papers appear in a channel, not necessarily on day one.
@@ -94,6 +94,14 @@ In the Apps Script editor, go to Triggers (clock icon) → Add Trigger. Choose `
 - A source shows an error: re-run `testFetchAllSourcesWithoutWriting` — the error message usually explains what happened (missing API key, service temporarily down, etc.).
 - Nothing new after a real run: check the Run Log. If "New After Dedupe" is 0, everything found this time was already logged from a previous run — expected behavior if you run it again soon.
 - Slack messages are not arriving but the Sheet updated: check the Run Log's Errors column, or run `postTestMessageToSlack` to isolate whether it is a webhook configuration problem or something about that specific run.
+**Rejecting papers**
+
+Do not delete rows from the Digest tab. The Digest is the Scout's only memory of what it has already seen: a row's DOI, arXiv ID and title hash are the three fingerprints dedupe checks against. Delete the row and you delete the fingerprints, so the next time any source re-surfaces that paper the Scout treats it as new and logs it again.
+
+Instead, select any cell in each row you want gone and use **Literature Scout → Move selected rows to Removed** in the Sheet's menu bar. That copies the identifiers to the Removed tab and then deletes the rows for you. The Removed tab keeps the title and link alongside the identifiers, so you can later answer "why isn't the Scout finding X?" by reading the sheet rather than guessing.
+
+The menu appears automatically when you open the spreadsheet. If it is missing, reload the tab — Apps Script adds it via `onOpen`, which only fires on load.
+
 - A paper seems wrongly included or excluded: the relevance logic is in `relevanceFilter.gs` and the topic list is in `config.gs`.
 
 ---

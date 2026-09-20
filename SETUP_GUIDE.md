@@ -60,6 +60,7 @@ Open `config.gs` in the editor. The file ships with illustrative placeholder top
 - Click Run (the ▷ button).
 - The first time you run anything, Google will ask you to authorize the script — choose your account, click "Advanced," then "Go to [project name] (unsafe)," then "Allow." This warning is normal for any script you create yourself.
 - Check your Sheet — a new tab called Digest should now exist with column headers.
+- Now select `setupRemovedSheet` from the same dropdown and run it. This creates the Removed tab, where rejected papers go so they do not come back on a later run.
 
 **Step 11: Set up Slack notifications (optional but recommended)**
 Slack posting is off by default. Do this whenever you're ready to have new papers show up in a channel, not necessarily on day one.

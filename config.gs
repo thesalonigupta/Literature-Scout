@@ -236,6 +236,9 @@ const LOW_QUALITY_TEXT_PATTERNS = [
   /book [ivxlcdm]+ of [ivxlcdm]+/i,   // serialized self-published book volumes
   /single[- ]premise/i,               // grand-unifying-theory framing
   /here is the abstract/i,           // leaked copy-paste instructions from an LLM-assisted draft
+  /axiomatic .{0,20}(theory|foundation)/i,  // grand-unifying-theory framing
+  /self[- ]?published|private press/i,      // stated non-venue
+  /originally submitted to/i,               // repackaged rejected submission
 ];
 
 // Some TOPICS are pure theory/mechanism terms that, on their own, tend to
@@ -399,6 +402,7 @@ const SOURCES_ENABLED = {
 const SHEET_TABS = {
   digest: 'Digest',     // main output: one row per relevant new paper
   runLog: 'Run Log',    // one row per script execution, for debugging
+  removed: 'Removed',   // papers you rejected — kept so they don't come back
 };
 
 // ---------------------------------------------------------------------------
