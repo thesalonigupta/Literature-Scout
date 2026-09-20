@@ -1,6 +1,6 @@
 # Literature Scout
 
-A Google Apps Script tool that monitors four academic sources — arXiv, Crossref, PhilPapers, and OpenAlex — for new papers matching your research topics, logs relevant results to a Google Sheet, and optionally posts them to a Slack channel. It runs entirely inside Google's infrastructure with no installations, servers, or paid subscriptions required beyond two free API credentials.
+A Google Apps Script tool that monitors four academic sources — arXiv, Crossref, PhilPapers, and OpenAlex — for new papers matching your research topics, logs relevant results to a Google Sheet, and optionally posts them to a Slack channel. It runs entirely inside Google's infrastructure with no installations, servers, or paid subscriptions required beyond one free API key (plus a Slack webhook, if you want the optional notifications).
 
 Two more sources (PubMed, bioRxiv) are available as opt-in plug-ins in `sources/optional/` for fields that overlap biology, medicine, or life sciences — see `SOURCES.md` for what's included, what was evaluated and rejected, and how to wire in something else your field needs that isn't listed here.
 
@@ -89,11 +89,6 @@ Running it again will not create duplicates and will not re-post anything alread
 **Setting up a recurring schedule**
 In the Apps Script editor, go to Triggers (clock icon) → Add Trigger. Choose `runLiteratureScout`, set a weekly or daily schedule, and save.
 
-**If something goes wrong**
-
-- A source shows an error: re-run `testFetchAllSourcesWithoutWriting` — the error message usually explains what happened (missing API key, service temporarily down, etc.).
-- Nothing new after a real run: check the Run Log. If "New After Dedupe" is 0, everything found this time was already logged from a previous run — expected behavior if you run it again soon.
-- Slack messages are not arriving but the Sheet updated: check the Run Log's Errors column, or run `postTestMessageToSlack` to isolate whether it is a webhook configuration problem or something about that specific run.
 **Rejecting papers**
 
 Do not delete rows from the Digest tab. The Digest is the Scout's only memory of what it has already seen: a row's DOI, arXiv ID and title hash are the three fingerprints dedupe checks against. Delete the row and you delete the fingerprints, so the next time any source re-surfaces that paper the Scout treats it as new and logs it again.
@@ -102,6 +97,11 @@ Instead, select any cell in each row you want gone and use **Literature Scout �
 
 The menu appears automatically when you open the spreadsheet. If it is missing, reload the tab — Apps Script adds it via `onOpen`, which only fires on load.
 
+**If something goes wrong**
+
+- A source shows an error: re-run `testFetchAllSourcesWithoutWriting` — the error message usually explains what happened (missing API key, service temporarily down, etc.).
+- Nothing new after a real run: check the Run Log. If "New After Dedupe" is 0, everything found this time was already logged from a previous run — expected behavior if you run it again soon.
+- Slack messages are not arriving but the Sheet updated: check the Run Log's Errors column, or run `postTestMessageToSlack` to isolate whether it is a webhook configuration problem or something about that specific run.
 - A paper seems wrongly included or excluded: the relevance logic is in `relevanceFilter.gs` and the topic list is in `config.gs`.
 
 ---
