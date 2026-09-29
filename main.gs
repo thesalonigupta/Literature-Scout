@@ -7,7 +7,8 @@
  *
  *   1. Fetch candidates from every enabled source (config.gs toggles)
  *   2. Dedupe against the Sheet + within this batch (dedupe.gs)
- *   3. Filter to relevant papers only (relevanceFilter.gs)
+ *   3. Filter to relevant papers only (relevanceFilter.gs), then score
+ *      and sort them by relevance (relevanceScore.gs)
  *   4. Write surviving papers to the Sheet (writeToSheet.gs)
  *   5. Post surviving papers to Slack (postToSlack.gs) — no-op unless
  *      SLACK.enabled is true in config.gs (see postToSlack.gs for setup)
@@ -41,8 +42,11 @@ function runLiteratureScout() {
   // --- Step 2: Dedupe (against Sheet history + within this batch) ---
   const newPapers = filterToNewPapers(candidates);
 
-  // --- Step 3: Relevance filter ---
-  const relevantNewPapers = filterToRelevantPapers(newPapers);
+  // --- Step 3: Relevance filter, then ranking ---
+  // Scoring never removes a paper; it adds relevanceScore / relevanceTier
+  // (written to the Digest, and used by SLACK.minTierForIndividualPosts)
+  // and sorts the list highest-score-first.
+  const relevantNewPapers = scoreAndTierPapers(filterToRelevantPapers(newPapers));
 
   // --- Step 4: Write to Sheet ---
   appendPapersToDigest(relevantNewPapers);
@@ -163,4 +167,47 @@ function testFetchAllSourcesWithoutWriting() {
   if (SOURCES_ENABLED.openalex) {
     Logger.log('openalex: %s candidates', fetchOpenAlex().length);
   }
+}
+
+/**
+ * Convenience function for manual testing: runs fetch, dedupe, and the
+ * relevance filter and ranking exactly as runLiteratureScout does, then logs
+ * every paper that WOULD be added, with its tier, score and matched topics. Writes nothing to the Sheet
+ * and posts nothing to Slack, so it can be run as often as you like.
+ *
+ * Use it after editing the topic lists in config.gs to see what the change
+ * does before committing to a real run.
+ */
+function previewRelevantPapers() {
+  const errors = [];
+  let candidates = [];
+
+  if (SOURCES_ENABLED.arxiv) {
+    candidates = candidates.concat(safelyFetch('arxiv', fetchArxiv, errors));
+  }
+  if (SOURCES_ENABLED.crossref) {
+    candidates = candidates.concat(safelyFetch('crossref', fetchCrossref, errors));
+  }
+  if (SOURCES_ENABLED.philpapers) {
+    candidates = candidates.concat(safelyFetch('philpapers', fetchPhilPapers, errors));
+  }
+  if (SOURCES_ENABLED.openalex) {
+    candidates = candidates.concat(safelyFetch('openalex', fetchOpenAlex, errors));
+  }
+
+  const newPapers = filterToNewPapers(candidates);
+  const relevant = scoreAndTierPapers(filterToRelevantPapers(newPapers));
+
+  Logger.log(
+    'PREVIEW: %s candidates, %s new after dedupe, %s relevant (nothing written)',
+    candidates.length, newPapers.length, relevant.length
+  );
+  relevant.forEach(function(paper, i) {
+    Logger.log('%s. [%s, %s %s] %s  |  %s',
+      i + 1, paper.source, paper.relevanceTier, paper.relevanceScore,
+      paper.title, paper.matchedTopics.join(', '));
+  });
+  errors.forEach(function(message) {
+    Logger.log('ERROR: %s', message);
+  });
 }

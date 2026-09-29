@@ -33,9 +33,10 @@
  * TUNING
  * ------
  * Every number this file uses lives in RELEVANCE_SCORING in config.gs, and
- * every topic's tier lives in TOPIC_TIER_* there. Nothing in this file needs
- * editing to change how papers rank. If you change the tier lists, run
- * validateTopicTiers() once to check nothing got left out.
+ * every term's weight follows from which list it is in there (CORE_TOPICS,
+ * CONTEXT_TOPICS, WEAK_TOPICS). Nothing in this file needs editing to change
+ * how papers rank. After editing those lists, run validateTopicTiers() once
+ * to catch typos.
  *
  * KNOWN LIMITATIONS
  * -----------------
@@ -55,14 +56,15 @@
  * highest-score-first. Called from main.gs between the relevance filter and
  * the Sheet write (if you add the call there — see main.gs).
  *
- * @param {NormalizedPaper[]} papers - Each must already have `matchedTopics`
- *        attached by relevanceFilter.gs.
+ * @param {NormalizedPaper[]} papers - Each should already have
+ *        `relevanceMatches` attached by relevanceFilter.gs; if not, the
+ *        matches are recomputed.
  * @return {NormalizedPaper[]} The same papers, each with `relevanceScore`
  *         and `relevanceTier` added, sorted by score descending.
  */
 function scoreAndTierPapers(papers) {
   papers.forEach(function(paper) {
-    const result = scorePaper(paper, paper.matchedTopics || []);
+    const result = scorePaper(paper, paper.relevanceMatches);
     paper.relevanceScore = result.score;
     paper.relevanceTier = result.tier;
   });
@@ -80,30 +82,37 @@ function scoreAndTierPapers(papers) {
  * editor when you're checking why something ranked where it did.
  *
  * @param {NormalizedPaper} paper
- * @param {string[]} matchedTopics
+ * @param {Object[]=} matches - The structured matches from
+ *        checkRelevance / evaluateRelevanceText (relevanceFilter.gs).
+ *        Recomputed from the paper's title and abstract if omitted.
  * @return {{score: number, tier: string, breakdown: Object}}
  */
-function scorePaper(paper, matchedTopics) {
+function scorePaper(paper, matches) {
   const weights = RELEVANCE_SCORING;
   const title = String(paper.title || '').toLowerCase();
   const abstract = String(paper.abstract || '');
   const haystack = (title + ' ' + abstract).toLowerCase();
 
-  // Collapse variant forms so "transmission dynamics" + "dynamics of
-  // transmission" counts once, not twice. Without this, every topic that
-  // has a variant form in TOPICS would double its own score.
-  const topics = dedupeNestedTopics(matchedTopics);
+  if (!matches) {
+    matches = evaluateRelevanceText(paper.title, paper.abstract).matches;
+  }
+
+  // Collapse variant forms so "reproduction number" + "basic reproduction
+  // number" counts once, not twice. Without this, every term that has a
+  // longer variant in config.gs would double its own score.
+  const topicMatches = dedupeNestedTopics(matches);
+  const topics = topicMatches.map(function(match) { return match.label; });
 
   let topicPoints = 0;
   let coreOrSupportingCount = 0;
 
-  topics.forEach(function(topic) {
-    const tier = getTopicTier(topic);
+  topicMatches.forEach(function(match) {
+    const tier = getTopicTier(match);
     let points = weights.topicPoints[tier] || weights.topicPoints.supporting;
 
-    // A topic in the title is a much stronger signal than one buried in an
+    // A term in the title is a much stronger signal than one buried in an
     // abstract — an abstract mentions many things, a title names the subject.
-    if (title.indexOf(topic.toLowerCase()) !== -1) {
+    if (match.titleHit) {
       points = points * weights.titleMultiplier;
     }
 
@@ -185,9 +194,9 @@ function assignTier(score, signals) {
 
   if (tier !== 'core') return tier;
 
-  // Guard 1: context-tier terms alone can never make a paper Core, no matter
-  // how many of them stacked up. This is what keeps a paper naming many
-  // context-tier terms out of the top of the sheet.
+  // Guard 1: weak terms alone can never make a paper Core, no matter how
+  // many of them stacked up. This is what keeps a paper naming many
+  // weak terms out of the top of the sheet.
   if (signals.coreOrSupportingCount === 0) {
     return 'adjacent';
   }
@@ -204,41 +213,46 @@ function assignTier(score, signals) {
 }
 
 /**
- * Looks up which tier a topic belongs to. Anything missing from all three
- * lists in config.gs is treated as 'supporting' — a deliberate middle
- * default, so a newly-added topic someone forgot to tier neither disappears
- * nor dominates. validateTopicTiers() reports these.
+ * The ranking weight of one matched term, from which list it is in
+ * (config.gs):
+ *   WEAK_TOPICS     -> 'context'
+ *   CORE_TOPICS     -> 'core'
+ *   CONTEXT_TOPICS  -> 'supporting'
  *
- * @param {string} topic
+ * @param {{tier: string, weak: boolean}} match - One entry of the
+ *        structured matches from relevanceFilter.gs.
  * @return {string} 'core' | 'supporting' | 'context'
  */
-function getTopicTier(topic) {
-  if (TOPIC_TIER_CORE.indexOf(topic) !== -1) return 'core';
-  if (TOPIC_TIER_CONTEXT.indexOf(topic) !== -1) return 'context';
+function getTopicTier(match) {
+  if (match.weak) return 'context';
+  if (match.tier === 'core') return 'core';
   return 'supporting';
 }
 
 /**
- * Removes matched topics that are contained inside another matched topic, so
+ * Removes matched terms that are contained inside another matched term, so
  * variant forms of the same idea only score once.
  *
- * Example: a paper matching 'transmission dynamics' and 'dynamics' both
- * would only count 'transmission dynamics' — the longer, more specific form.
+ * Example: a paper matching 'reproduction number' and 'basic reproduction
+ * number' would only count 'basic reproduction number' — the longer, more
+ * specific form.
  *
- * @param {string[]} topics
- * @return {string[]}
+ * @param {Object[]} matches - Structured matches, each with a `label`.
+ * @return {Object[]}
  */
-function dedupeNestedTopics(topics) {
+function dedupeNestedTopics(matches) {
   const unique = [];
+  const seen = {};
 
-  topics.forEach(function(topic) {
-    const lower = topic.toLowerCase();
-    const isContainedInAnother = topics.some(function(other) {
-      const otherLower = other.toLowerCase();
+  matches.forEach(function(match) {
+    const lower = match.label.toLowerCase();
+    const isContainedInAnother = matches.some(function(other) {
+      const otherLower = other.label.toLowerCase();
       return otherLower !== lower && otherLower.indexOf(lower) !== -1;
     });
-    if (!isContainedInAnother && unique.indexOf(topic) === -1) {
-      unique.push(topic);
+    if (!isContainedInAnother && !seen[lower]) {
+      seen[lower] = true;
+      unique.push(match);
     }
   });
 
@@ -297,51 +311,62 @@ function escapeRegExp(text) {
 
 /**
  * MAINTENANCE HELPER — run this from the Apps Script editor after editing
- * any of the TOPIC_TIER_* lists in config.gs.
+ * CORE_TOPICS, CONTEXT_TOPICS, TOPIC_ANCHORS or WEAK_TOPICS in config.gs.
  *
  * Reports:
- *   - topics in TOPICS that aren't in any tier list (they'll default to
- *     'supporting', which may not be what you wanted)
- *   - topics in a tier list that are no longer in TOPICS (dead entries)
- *   - topics appearing in more than one tier list (the first match wins,
- *     which is almost certainly a mistake)
+ *   - WEAK_TOPICS entries that don't match any term's label (usually a typo;
+ *     the entry does nothing)
+ *   - terms listed more than once (in the same or different lists)
+ *   - CONTEXT_TOPICS groups that name an anchor group missing from
+ *     TOPIC_ANCHORS (terms in that group can never match via it)
  *
  * Results go to View > Logs.
  */
 function validateTopicTiers() {
-  const untiered = TOPICS.filter(function(topic) {
-    return TOPIC_TIER_CORE.indexOf(topic) === -1
-      && TOPIC_TIER_SUPPORTING.indexOf(topic) === -1
-      && TOPIC_TIER_CONTEXT.indexOf(topic) === -1;
+  const tiers = getCompiledTopicTiers();
+  const coreLabels = tiers.core.map(function(term) { return term.label.toLowerCase(); });
+  const contextLabels = [];
+  tiers.context.forEach(function(group) {
+    group.terms.forEach(function(term) { contextLabels.push(term.label.toLowerCase()); });
+  });
+  const allLabels = coreLabels.concat(contextLabels);
+
+  const deadWeak = WEAK_TOPICS.filter(function(weak) {
+    return allLabels.indexOf(String(weak).trim().toLowerCase()) === -1;
   });
 
-  const allTiered = [].concat(TOPIC_TIER_CORE, TOPIC_TIER_SUPPORTING, TOPIC_TIER_CONTEXT);
-
-  const orphaned = allTiered.filter(function(topic) {
-    return TOPICS.indexOf(topic) === -1;
+  const duplicated = allLabels.filter(function(label, index) {
+    return allLabels.indexOf(label) !== index;
   });
 
-  const duplicated = allTiered.filter(function(topic, index) {
-    return allTiered.indexOf(topic) !== index;
+  const missingAnchors = [];
+  CONTEXT_TOPICS.forEach(function(group) {
+    group.anchors.forEach(function(name) {
+      if (!TOPIC_ANCHORS[name] && missingAnchors.indexOf(name) === -1) {
+        missingAnchors.push(name);
+      }
+    });
   });
 
-  Logger.log('--- Topic tier validation ---');
-  Logger.log('TOPICS: %s terms', TOPICS.length);
-  Logger.log('  core: %s | supporting: %s | context: %s',
-    TOPIC_TIER_CORE.length, TOPIC_TIER_SUPPORTING.length, TOPIC_TIER_CONTEXT.length);
+  Logger.log('--- Topic list validation ---');
+  Logger.log('core terms: %s | context terms: %s (in %s groups) | weak: %s',
+    coreLabels.length, contextLabels.length, CONTEXT_TOPICS.length, WEAK_TOPICS.length);
 
-  if (untiered.length === 0) {
-    Logger.log('OK — every topic has a tier.');
-  } else {
-    Logger.log('NOT TIERED (defaulting to "supporting"): %s', untiered.join(', '));
+  if (deadWeak.length === 0 && duplicated.length === 0 && missingAnchors.length === 0) {
+    Logger.log('OK — no problems found.');
   }
 
-  if (orphaned.length > 0) {
-    Logger.log('IN A TIER LIST BUT NOT IN TOPICS (dead entries): %s', orphaned.join(', '));
+  if (deadWeak.length > 0) {
+    Logger.log('IN WEAK_TOPICS BUT NOT A TERM ANYWHERE (does nothing): %s', deadWeak.join(', '));
   }
 
   if (duplicated.length > 0) {
-    Logger.log('IN MORE THAN ONE TIER LIST: %s', duplicated.join(', '));
+    Logger.log('LISTED MORE THAN ONCE: %s', duplicated.join(', '));
+  }
+
+  if (missingAnchors.length > 0) {
+    Logger.log('ANCHOR GROUPS USED IN CONTEXT_TOPICS BUT NOT DEFINED IN TOPIC_ANCHORS: %s',
+      missingAnchors.join(', '));
   }
 }
 
@@ -368,7 +393,7 @@ function explainScoreForSampleText() {
   });
 
   const relevance = checkRelevance(paper);
-  const scored = scorePaper(paper, relevance.matchedTopics);
+  const scored = scorePaper(paper, relevance.matches);
 
   Logger.log('Passed filter: %s', relevance.isRelevant);
   Logger.log('Matched topics: %s', relevance.matchedTopics.join(', ') || '(none)');

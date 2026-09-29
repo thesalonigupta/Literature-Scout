@@ -38,6 +38,11 @@
  *                                       suffix stripped (see
  *                                       normalizeArxivId), or null.
  * @property {string|null} philpapersId - Raw PhilPapers ID, or null.
+ * @property {string|null} language  - Language code the SOURCE reports
+ *                                       (e.g. 'en', 'it'), lowercased, or
+ *                                       null if the source doesn't say.
+ *                                       Crossref and OpenAlex supply it;
+ *                                       arXiv and PhilPapers don't.
  * @property {string} titleHash       - Computed automatically by
  *                                       makeNormalizedPaper(); do not set
  *                                       this yourself.
@@ -92,6 +97,7 @@ function makeNormalizedPaper(fields) {
     doi: normalizeDoi(fields.doi),
     arxivId: normalizeArxivId(fields.arxivId),
     philpapersId: fields.philpapersId ? String(fields.philpapersId).trim() : null,
+    language: fields.language ? String(fields.language).trim().toLowerCase() : null,
     titleHash: computeTitleHash(title),
   };
 }
@@ -212,15 +218,30 @@ function collapseWhitespace(text) {
  * hash identically, but two genuinely different titles that happen to
  * share most words will NOT collide (hashing, not fuzzy matching).
  *
+ * Letters and numbers are matched with Unicode classes (\p{L}, \p{N}), not
+ * \w. \w is ASCII-only in JavaScript, so it used to strip every character
+ * of a non-Latin title: a fully Japanese or Arabic title normalized to ""
+ * and hashed to d41d8cd98f00b204e9800998ecf8427e (the MD5 of an empty
+ * string), which made every such title a "duplicate" of the first one.
+ * For pure-ASCII titles the output is identical to the old \w version
+ * (underscore is kept deliberately), so existing hashes in the Sheet stay
+ * valid.
+ *
  * @param {string} title - Raw (not yet normalized) title.
  * @return {string} Hex-encoded hash string.
  */
 function computeTitleHash(title) {
-  const normalized = String(title)
+  let normalized = String(title)
     .toLowerCase()
-    .replace(/[^\w\s]/g, '') // strip punctuation, keep letters/numbers/space
+    .replace(/[^\p{L}\p{N}_\s]/gu, '') // strip punctuation, keep letters/numbers/space in any script
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Titles made entirely of punctuation/symbols would still normalize to ""
+  // and collide with each other. Hash the raw title instead.
+  if (!normalized) {
+    normalized = String(title).trim();
+  }
 
   // Apps Script provides Utilities.computeDigest for hashing — MD5 is
   // plenty here since this is a dedupe key, not a security boundary.

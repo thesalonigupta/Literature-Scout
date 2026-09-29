@@ -1,5 +1,16 @@
 # Case Study: Tuning a Real Deployment
 
+> **Note on versions.** This case study was written against an earlier
+> version of the relevance filter, which used a single flat `TOPICS` list
+> plus an `AMBIGUOUS_TOPICS` exception list (a term there needed a second
+> matched term to count). The current filter replaces that with context
+> tiers: a term that is only relevant in a particular setting goes in a
+> `CONTEXT_TOPICS` group with anchors that define that setting, and a term
+> that tends to appear in passing goes in `WEAK_TOPICS` (see config.gs
+> section 1). Wherever this document says "moved to `AMBIGUOUS_TOPICS`",
+> read "moved into a context group, or marked weak". The lessons about
+> *when* to make a change carry over unchanged.
+
 `README.md`'s "Adapting This to Your Field" section explains the rules —
 compound phrases over bare words, `AMBIGUOUS_TOPICS` for terms that mean
 something specific in your field but something else elsewhere, don't act

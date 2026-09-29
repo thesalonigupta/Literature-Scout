@@ -11,19 +11,19 @@
  * "Polite pool": including a mailto param gets faster, more reliable
  * responses — see SOURCE_SETTINGS.crossref.politeEmail in config.gs.
  *
- * Design choice: rather than one big OR query across all TOPICS
- * (Crossref's query syntax doesn't cleanly support that), this queries
- * once PER TOPIC and merges results. dedupe.gs's within-batch check (see
- * dedupe.gs) handles the resulting overlap when one paper matches
- * multiple topics. This does mean more HTTP requests than a single query
- * would — acceptable at most topic-list sizes and weekly run cadences,
- * but worth knowing if the topic list grows very large.
+ * Design choice: rather than one big OR query (Crossref's query syntax
+ * doesn't cleanly support that), this queries once PER entry in
+ * FETCH_QUERIES (config.gs) and merges results. dedupe.gs's within-batch
+ * check handles the overlap when one paper comes back for several queries.
+ * The queries are a short list kept separate from the relevance terms, so
+ * the number of requests per run stays small even as the relevance rules
+ * grow.
  */
 
 const CROSSREF_API_BASE = 'https://api.crossref.org/works';
 
 /**
- * Fetches recent Crossref works across all TOPICS.
+ * Fetches recent Crossref works for every query in FETCH_QUERIES.
  *
  * @return {NormalizedPaper[]}
  */
@@ -32,7 +32,7 @@ function fetchCrossref() {
   const cutoff = getLookbackCutoffDate();
   const allPapers = [];
 
-  TOPICS.forEach(function(topic, index) {
+  FETCH_QUERIES.forEach(function(topic, index) {
     // Same precaution as fetchOpenAlex.gs: this hasn't been observed to
     // rate-limit Crossref in testing, but the request pattern (many
     // rapid calls in a tight loop) is identical to what DID trigger 429s
@@ -59,7 +59,17 @@ function fetchCrossref() {
 function fetchCrossrefForTopic(topic, cutoffDate, settings) {
   const params = [
     'query.bibliographic=' + encodeURIComponent(topic),
-    'filter=from-pub-date:' + cutoffDate,
+    // Upper bound: see getPublicationDateCeiling() in config.gs. Without
+    // it, sort=published fills the result window with bogus future-dated
+    // records.
+    // Type filters: SOURCE_SETTINGS.crossref.includeTypes (config.gs).
+    // Crossref treats repeated filters of the same name as OR, so
+    // "type:journal-article,type:book-chapter" means either type.
+    'filter=from-pub-date:' + cutoffDate +
+      ',until-pub-date:' + getPublicationDateCeiling() +
+      (settings.includeTypes || []).map(function(type) {
+        return ',type:' + type;
+      }).join(''),
     'rows=' + settings.rowsPerQuery,
     'sort=published',
     'order=desc',
@@ -117,6 +127,10 @@ function mapCrossrefItemToNormalizedPaper(item) {
   const title = titleArr.length > 0 ? titleArr[0] : '';
 
   if (!title) return null;
+
+  // Crossref placeholder records ("Title Pending 9860") registered ahead
+  // of publication, with no real metadata. They can arrive in bulk.
+  if (/^title pending\b/i.test(title)) return null;
 
   const authors = (item.author || [])
     .map(function(a) {

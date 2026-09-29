@@ -233,7 +233,7 @@ function backfillRelevanceScores(onlyBlankRows) {
     };
 
     const relevance = checkRelevance(paper);
-    const scored = scorePaper(paper, relevance.matchedTopics);
+    const scored = scorePaper(paper, relevance.matches);
 
     scoreColumn.push([scored.score]);
     tierColumn.push([scored.tier]);

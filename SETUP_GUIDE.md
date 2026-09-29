@@ -53,7 +53,7 @@ The key should never be pasted directly into a code file. Store it in Script Pro
 Open `config.gs` in the editor and find `politeEmail` under the crossref settings. Replace the placeholder with a real contact email (this is not a login — just identifies who's making the requests). Save.
 
 **Step 9: Configure your topics**
-Open `config.gs` in the editor. The file ships with illustrative placeholder topics. Replace the `TOPICS` list with your own field's vocabulary, and update the `TOPIC_TIER_CORE`, `TOPIC_TIER_SUPPORTING`, and `TOPIC_TIER_CONTEXT` lists to match (one entry per topic). See the README's "Adapting This to Your Field" section for guidance.
+Open `config.gs` in the editor. The file ships with illustrative placeholder topics. Replace the relevance lists in section 1 (`CORE_TOPICS`, `TOPIC_ANCHORS`, `CONTEXT_TOPICS`, `WEAK_TOPICS`) and the search lists in section 1B (`FETCH_QUERIES`, `ARXIV_QUERIES`) with your own field's vocabulary. Then select `validateTopicTiers` (in `relevanceScore.gs`) from the function dropdown and run it to catch typos. See the README's "Adapting This to Your Field" section for guidance.
 
 **Step 10: Create the Digest sheet**
 - In the function dropdown at the top of the editor, select `setupDigestSheet`.
@@ -96,9 +96,14 @@ This checks that all four sources are working without writing anything to the Sh
   ```
 - If any source shows an error instead of a number, that source has a problem — but the others will still work independently.
 
+### Preview: see what would be added, without adding it
+- Select `previewRelevantPapers` from the function dropdown and click Run.
+- View → Logs lists every paper a real run would add right now, with its relevance tier, score and matched terms. Nothing is written or posted.
+- Use this after every change to the topic lists in `config.gs`.
+
 ### Option B: Real run (adds new papers to the Sheet and posts to Slack)
 - Select `runLiteratureScout` from the function dropdown.
-- Click Run. This takes longer than the test run — a few minutes — since it also checks for duplicates, filters for relevance, writes results, and posts to Slack (if enabled).
+- Click Run. This takes longer than the test run — a few minutes — since it also checks for duplicates, filters for relevance, ranks the results, writes them, and posts to Slack (if enabled).
 - When it finishes, open your Sheet and check the Digest tab for new rows, the Run Log tab for a summary of what happened, and the Slack channel (if configured) for new messages.
 - Running it again won't create duplicates, and won't re-post anything already posted — the Slack step only ever sees papers that just passed dedupe and the relevance filter for the *first* time.
 
