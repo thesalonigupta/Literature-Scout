@@ -1,212 +1,283 @@
 /**
  * relevanceFilter.gs
  *
- * Cheap, no-LLM relevance check: does a paper's title or abstract contain
- * at least one of TOPICS (defined in config.gs)? Simple OR-match —
- * see config.gs for the reasoning on why OR rather than AND.
+ * Cheap, no-LLM relevance check using the rules configured in config.gs
+ * (section 1):
  *
- * This intentionally runs AFTER dedupe.gs, not before — checking "have I
- * seen this?" is a cheap Set lookup, while scanning title+abstract text
- * against a keyword list is comparatively more work. No point spending that
- * effort on a paper we're about to discard as a duplicate anyway.
+ *   (a) a CORE_TOPICS term on its own, or
+ *   (b) a CONTEXT_TOPICS term plus a mention of one of that term's anchors
+ *       (TOPIC_ANCHORS),
+ *
+ * where terms in WEAK_TOPICS count only if they're prominent (in the title,
+ * next to an anchor mention, or alongside another matched term), and the
+ * paper is not from a low-quality source (config.gs section 1D).
+ *
+ * Why context tiers rather than a flat OR-list with exceptions: a flat list
+ * lets in papers that use one of your terms in an unrelated sense, and the
+ * usual fix is a growing pile of special cases (terms that need a second
+ * match, terms that need corroborating vocabulary, terms that only count
+ * outside boilerplate sentences). Each of those is really a term that only
+ * matters in a particular context. The context tier handles that directly:
+ *   - "spillover" in an economics paper: no infection or animal mention, so
+ *     no match.
+ *   - "emergence" in a complexity-theory paper: no infection mention, so no
+ *     match.
+ *   - "surveillance" mentioned once, far from any infection vocabulary, in a
+ *     paper matching nothing else: a weak term out of context, so no match.
  *
  * This is NOT meant to be precise. Its only job is keeping obvious noise out
  * of the Sheet. Everything it lets through is then RANKED by
  * relevanceScore.gs, which sorts borderline material to the bottom of the
- * Digest instead of deleting it. When you're deciding whether to add a rule
- * here or a weight in relevanceScore.gs, prefer the weight: a rejection is
- * invisible and unauditable, a low score is neither.
+ * Digest instead of deleting it. When you're deciding whether to tighten a
+ * rule here or change a weight in relevanceScore.gs, prefer the weight: a
+ * rejection is invisible and unauditable, a low score is neither.
  *
- * AMBIGUOUS TOPICS:
- * Some TOPICS entries are everyday words shared with unrelated fields,
- * where a plain OR-match produces clear, common false positives. For terms
- * listed in AMBIGUOUS_TOPICS below, a match on that term ALONE is not
- * sufficient — the paper must also match at least one OTHER TOPICS term to
- * count as relevant. This is a narrow, deliberately small exception list,
- * not a general switch to AND-logic — see config.gs's reasoning for why OR
- * remains the default for everything else. Add a term here only after
- * observing it produce a genuine off-topic false positive in a real run,
- * not preemptively.
+ * Runs AFTER dedupe.gs, so no effort is spent on papers about to be
+ * discarded as duplicates.
  *
- * GATED TOPICS:
- * Some TOPICS terms are standard vocabulary in fields unrelated to yours.
- * Unlike ambiguous terms (which just need any second topic to corroborate
- * them), gated terms can also be corroborated by field-specific vocabulary
- * from GATE_CORROBORATION_TERMS in config.gs, even without a second topic
- * match. Use this when the term appears in genuinely relevant papers that
- * only use one of your TOPICS terms but use your field's core vocabulary
- * throughout. See config.gs section 1C.
- *
- * LOW-QUALITY SOURCES: plain topic OR-matching also lets through self-
- * published, non-peer-reviewed content that happens to share your field's
- * vocabulary. Two mechanisms address this, both configured in config.gs
- * and both empty/off by default until you populate them for your field:
- *   - isLowQualitySource() rejects known-bad DOI prefixes (Zenodo, on by
- *     default — see caveat in config.gs), blocklisted repeat-offender
- *     authors, and vanity-press text patterns.
- *   - THEORY_ONLY_TOPICS + hasAppliedTopicMatch() require a pure theory/
- *     mechanism topic match to be paired with a topic OUTSIDE that list.
- *     Pairing two theory-only topics with each other does NOT satisfy
- *     this — that combination is exactly what self-published "unified
- *     theory" content tends to pack in.
+ * Term patterns are compiled once per script execution (see
+ * getCompiledTopicTiers) rather than once per paper.
  */
 
-// Topics that need a second, independent TOPICS match to count.
-// Each entry here should have a one-line reason — what false positive
-// was observed, and when — so future maintainers know why it's here and
-// can reconsider if the term's behavior changes.
-//
-// These are illustrative placeholder examples. Replace them with terms
-// from your own TOPICS list that you have observed producing false positives.
-const AMBIGUOUS_TOPICS = [
-  'spillover',  // 2026-01-15: matched finance/economics articles on earnings spillover and market contagion — the word has a separate meaning in that literature
-  'emergence',  // 2026-01-15: matched philosophy and complexity-theory papers using emergence as a general concept — too common outside the target field when appearing alone
-];
+// Cache for compiled patterns. Apps Script re-runs top-level code on each
+// execution, so this resets naturally between runs.
+let COMPILED_TOPIC_TIERS_ = null;
 
 /**
- * Checks a single NormalizedPaper against TOPICS.
+ * Checks a single NormalizedPaper against the relevance rules.
  *
  * @param {NormalizedPaper} paper
- * @return {{isRelevant: boolean, matchedTopics: string[]}}
+ * @return {{isRelevant: boolean, matchedTopics: string[], matches: Object[]}}
+ *         matchedTopics lists the terms that matched (plus, for context-tier
+ *         matches, which anchors were present), for display in the Sheet and
+ *         Slack. matches is the same list in structured form, for
+ *         relevanceScore.gs.
  */
 function checkRelevance(paper) {
-  const haystack = (paper.title + ' ' + paper.abstract).toLowerCase();
-  const matchedTopics = [];
-
-  TOPICS.forEach(function(topic) {
-    if (haystack.indexOf(topic.toLowerCase()) !== -1) {
-      matchedTopics.push(topic);
-    }
-  });
-
-  // Topics that actually COUNT toward relevance, after the ambiguous-term
-  // and gated-term rules. The full matchedTopics list is still returned and
-  // written to the Sheet — a maintainer looking at a surprising row wants to
-  // see everything that matched, including the terms that didn't count.
-  const countableTopics = matchedTopics.filter(function(topic) {
-    return isCountableMatch(topic, matchedTopics, haystack);
-  });
-
-  let isRelevant = countableTopics.length > 0
-    && !isLowQualitySource(paper)
-    && !isBoilerplateOnlyMatch(paper, matchedTopics);
-
-  if (isRelevant && FILTER_TOGGLES.rejectTheoryOnlyPapers) {
-    isRelevant = hasAppliedTopicMatch(matchedTopics);
-  }
-
-  if (isRelevant && FILTER_TOGGLES.rejectPolicyOnlyPapers) {
-    isRelevant = !matchesOnlyContextTierTopics(matchedTopics);
-  }
-
+  const result = evaluateRelevanceText(paper.title, paper.abstract);
   return {
-    isRelevant: isRelevant,
-    matchedTopics: matchedTopics,
+    isRelevant: result.isRelevant && !isLowQualitySource(paper),
+    matchedTopics: result.matchedTopics,
+    matches: result.matches,
   };
 }
 
 /**
- * Decides whether one matched topic counts toward relevance on its own.
+ * The topic rules on their own, with no source-quality check. Takes plain
+ * text so fetchers (e.g. fetchPhilPapers.gs) can use the same rules to
+ * pre-filter raw records before normalizing them.
  *
- * Three cases:
- *   - A gated topic (config.gs GATED_TOPICS) counts only if corroborated.
- *   - An ambiguous topic counts only if some OTHER topic also matched.
- *   - Everything else counts as it always has.
+ * Step 1 finds every matching term across title + abstract, using the
+ * tiers in config.gs. Step 2 applies WEAK_TOPICS: a weak term only counts if
+ * it is in the title, OR (for context terms) it sits within
+ * ANCHOR_PROXIMITY_WORDS words of an anchor mention, OR the paper also
+ * matches another, different term.
  *
- * @param {string} topic - One topic that matched.
- * @param {string[]} allMatchedTopics - Every topic that matched this paper.
- * @param {string} haystack - Lowercased title + abstract.
+ * @param {string} title
+ * @param {string} abstract
+ * @return {{isRelevant: boolean, matchedTopics: string[], matches: Array<{
+ *   label: string, display: string, tier: string, weak: boolean,
+ *   titleHit: boolean
+ * }>}} tier is 'core' or 'context'. titleHit is true if the term itself
+ *   appears in the title.
+ */
+function evaluateRelevanceText(title, abstract) {
+  const titleText = String(title || '');
+  const text = titleText + ' \n ' + String(abstract || '');
+  const tiers = getCompiledTopicTiers();
+
+  // Each match: {label, display, tier, weak, titleHit, inTitle, nearAnchor}
+  const matches = [];
+
+  tiers.core.forEach(function(term) {
+    if (!term.pattern.test(text)) return;
+    const titleHit = term.pattern.test(titleText);
+    matches.push({
+      label: term.label,
+      display: term.label,
+      tier: 'core',
+      weak: isWeakTopic(term.label),
+      titleHit: titleHit,
+      inTitle: titleHit,
+      nearAnchor: false,
+    });
+  });
+
+  tiers.context.forEach(function(group) {
+    const presentAnchors = group.anchors.filter(function(name) {
+      return testAny(group.anchorPatterns[name], text);
+    });
+    if (presentAnchors.length === 0) return;
+
+    const titleHasAnchor = group.anchors.some(function(name) {
+      return testAny(group.anchorPatterns[name], titleText);
+    });
+    const anchorPatterns = presentAnchors.reduce(function(all, name) {
+      return all.concat(group.anchorPatterns[name]);
+    }, []);
+
+    group.terms.forEach(function(term) {
+      if (!term.pattern.test(text)) return;
+      const titleHit = term.pattern.test(titleText);
+      matches.push({
+        label: term.label,
+        display: term.label + ' [' + presentAnchors.join(' + ') + ']',
+        tier: 'context',
+        weak: isWeakTopic(term.label),
+        titleHit: titleHit,
+        inTitle: titleHit && titleHasAnchor,
+        nearAnchor: isNearAnchorMention(text, term.pattern, anchorPatterns),
+      });
+    });
+  });
+
+  const hasSeveralTerms = matches.length >= 2;
+  const counted = matches.filter(function(match) {
+    return !match.weak || match.inTitle || match.nearAnchor || hasSeveralTerms;
+  });
+
+  return {
+    isRelevant: counted.length > 0,
+    matchedTopics: matches.map(function(match) { return match.display; }),
+    matches: matches.map(function(match) {
+      return {
+        label: match.label,
+        display: match.display,
+        tier: match.tier,
+        weak: match.weak,
+        titleHit: match.titleHit,
+      };
+    }),
+  };
+}
+
+/**
+ * True if some occurrence of `termPattern` in `text` is within
+ * ANCHOR_PROXIMITY_WORDS words of some match of `anchorPatterns`. Catches
+ * "surveillance of the outbreak", while a paper that mentions an outbreak in
+ * a separate sentence does not count.
+ *
+ * @param {string} text
+ * @param {RegExp} termPattern
+ * @param {RegExp[]} anchorPatterns
  * @return {boolean}
  */
-function isCountableMatch(topic, allMatchedTopics, haystack) {
-  if (FILTER_TOGGLES.enforceGatedTopics && GATED_TOPICS.indexOf(topic) !== -1) {
-    return isGatedTopicCorroborated(topic, allMatchedTopics, haystack);
+function isNearAnchorMention(text, termPattern, anchorPatterns) {
+  const termWords = wordPositions(text, termPattern);
+  if (termWords.length === 0) return false;
+
+  const anchorWords = [];
+  anchorPatterns.forEach(function(anchor) {
+    anchorWords.push.apply(anchorWords, wordPositions(text, anchor));
+  });
+
+  return termWords.some(function(termWord) {
+    return anchorWords.some(function(anchorWord) {
+      return Math.abs(termWord - anchorWord) <= ANCHOR_PROXIMITY_WORDS;
+    });
+  });
+}
+
+/**
+ * Word index (0-based) of the start of every match of `pattern` in `text`.
+ *
+ * @param {string} text
+ * @param {RegExp} pattern
+ * @return {number[]}
+ */
+function wordPositions(text, pattern) {
+  const flags = pattern.flags.indexOf('g') === -1 ? pattern.flags + 'g' : pattern.flags;
+  const globalPattern = new RegExp(pattern.source, flags);
+  const positions = [];
+  let match;
+  while ((match = globalPattern.exec(text)) !== null) {
+    const before = text.slice(0, match.index).trim();
+    positions.push(before ? before.split(/\s+/).length : 0);
+    if (match[0].length === 0) globalPattern.lastIndex++;
+  }
+  return positions;
+}
+
+/**
+ * True if `label` is listed in WEAK_TOPICS (config.gs).
+ *
+ * @param {string} label
+ * @return {boolean}
+ */
+function isWeakTopic(label) {
+  return WEAK_TOPICS.some(function(weak) {
+    return String(weak).trim().toLowerCase() === label.toLowerCase();
+  });
+}
+
+/**
+ * True if any of the regular expressions matches `text`.
+ *
+ * @param {RegExp[]} patterns
+ * @param {string} text
+ * @return {boolean}
+ */
+function testAny(patterns, text) {
+  return (patterns || []).some(function(re) { return re.test(text); });
+}
+
+/**
+ * Compiles the topic lists in config.gs into regular expressions, once per
+ * execution.
+ *
+ * @return {{core: Array, context: Array}}
+ */
+function getCompiledTopicTiers() {
+  if (!COMPILED_TOPIC_TIERS_) {
+    COMPILED_TOPIC_TIERS_ = {
+      core: CORE_TOPICS.map(compileTopicTerm),
+      context: CONTEXT_TOPICS.map(function(group) {
+        const anchorPatterns = {};
+        group.anchors.forEach(function(name) {
+          if (!TOPIC_ANCHORS[name]) {
+            Logger.log('relevanceFilter: CONTEXT_TOPICS refers to anchor group "%s", ' +
+              'which is not defined in TOPIC_ANCHORS (config.gs).', name);
+          }
+          anchorPatterns[name] = TOPIC_ANCHORS[name] || [];
+        });
+        return {
+          anchors: group.anchors,
+          anchorPatterns: anchorPatterns,
+          terms: group.terms.map(compileTopicTerm),
+        };
+      }),
+    };
+  }
+  return COMPILED_TOPIC_TIERS_;
+}
+
+/**
+ * Turns one config.gs topic entry into {label, pattern}.
+ *
+ * A plain string becomes a case-insensitive, whole-word pattern in which
+ * spaces and hyphens are interchangeable and a trailing "s" is optional:
+ *   'reservoir host'  ->  /\breservoir[\s-]+hosts?\b/i
+ * An entry that is already {label, pattern} is used as is.
+ *
+ * @param {string|{label: string, pattern: RegExp}} entry
+ * @return {{label: string, pattern: RegExp}}
+ */
+function compileTopicTerm(entry) {
+  if (typeof entry === 'object' && entry.pattern) {
+    return { label: entry.label, pattern: entry.pattern };
   }
 
-  return isUnambiguousMatch(topic, allMatchedTopics);
-}
-
-/**
- * A single matched topic counts on its own UNLESS it's in
- * AMBIGUOUS_TOPICS, in which case it only counts if at least one OTHER
- * matched topic is present alongside it.
- *
- * @param {string} topic - One topic that matched.
- * @param {string[]} allMatchedTopics - Every topic that matched this paper.
- * @return {boolean}
- */
-function isUnambiguousMatch(topic, allMatchedTopics) {
-  if (AMBIGUOUS_TOPICS.indexOf(topic) === -1) {
-    return true; // not ambiguous — matching on its own is fine, as before
+  const label = String(entry).trim().toLowerCase();
+  const words = label.split(/[\s-]+/).map(escapeRegExp);
+  const lastIndex = words.length - 1;
+  if (!/s$/.test(words[lastIndex])) {
+    words[lastIndex] += 's?';
   }
-  // Ambiguous topic: only counts if some OTHER matched topic exists.
-  return allMatchedTopics.some(function(other) {
-    return other !== topic;
-  });
-}
 
-/**
- * A gated topic counts only if the paper gives some independent sign that
- * it's about your field. Either is enough:
- *
- *   (a) the text contains a GATE_CORROBORATION_TERM (config.gs section 1C),
- *       or
- *   (b) the paper also matched a TOPICS term that isn't itself gated.
- *
- * Condition (b) matters more than it looks: it's what keeps papers that
- * discuss your topic through related language from being dropped for
- * using no corroboration vocabulary in their abstract.
- *
- * @param {string} topic
- * @param {string[]} allMatchedTopics
- * @param {string} haystack - Lowercased title + abstract.
- * @return {boolean}
- */
-function isGatedTopicCorroborated(topic, allMatchedTopics, haystack) {
-  const hasCorroboratingVocabulary = GATE_CORROBORATION_TERMS.some(function(term) {
-    return new RegExp('\\b' + escapeRegExp(term) + '\\b', 'i').test(haystack);
-  });
-  if (hasCorroboratingVocabulary) return true;
-
-  return allMatchedTopics.some(function(other) {
-    return other !== topic && GATED_TOPICS.indexOf(other) === -1;
-  });
-}
-
-/**
- * True if the paper matches at least one TOPICS term that is NOT in
- * THEORY_ONLY_TOPICS (config.gs). A paper matching ONLY theory-only terms —
- * however many, however they pair with each other — does not count. See
- * THEORY_ONLY_TOPICS's comment in config.gs for why. Ships as a no-op
- * (always returns true) until THEORY_ONLY_TOPICS is populated.
- *
- * Only consulted when FILTER_TOGGLES.rejectTheoryOnlyPapers is true.
- *
- * @param {string[]} matchedTopics
- * @return {boolean}
- */
-function hasAppliedTopicMatch(matchedTopics) {
-  return matchedTopics.some(function(topic) {
-    return THEORY_ONLY_TOPICS.indexOf(topic) === -1;
-  });
-}
-
-/**
- * True if every matched topic is context-tier. Used when
- * FILTER_TOGGLES.rejectPolicyOnlyPapers is enabled — papers matching only
- * context-tier terms are de-prioritised by ranking rather than deleted by
- * default, but this toggle lets you reject them outright if context-tier
- * noise is still too high in your sheet.
- *
- * @param {string[]} matchedTopics
- * @return {boolean}
- */
-function matchesOnlyContextTierTopics(matchedTopics) {
-  if (!matchedTopics || matchedTopics.length === 0) return false;
-
-  return matchedTopics.every(function(topic) {
-    return getTopicTier(topic) === 'context';
-  });
+  return {
+    label: label,
+    pattern: new RegExp('\\b' + words.join('[\\s-]+') + '\\b', 'i'),
+  };
 }
 
 /**
@@ -233,67 +304,22 @@ function isLowQualitySource(paper) {
   });
   if (isBlockedAuthor) return true;
 
-  const text = (paper.title + ' ' + paper.abstract).toLowerCase();
-  const matchesLowQualityPattern = LOW_QUALITY_TEXT_PATTERNS.some(function(pattern) {
+  const text = String(paper.title || '') + ' ' + String(paper.abstract || '');
+  return LOW_QUALITY_TEXT_PATTERNS.some(function(pattern) {
     return pattern.test(text);
   });
-  if (matchesLowQualityPattern) return true;
-
-  return false;
-}
-
-/**
- * True if the paper's only reason for matching TOPICS is boilerplate
- * sentences (ethics declarations, compliance statements, methodology
- * disclaimers) rather than the topic actually being the paper's subject.
- * Only rejects when ALL of: (a) every matched topic is in
- * BOILERPLATE_CONTEXT_TOPICS, (b) the text matches a
- * BOILERPLATE_CONTEXT_PATTERNS entry, AND (c) no field-core language
- * is present. Ships as a no-op until both lists are populated in config.gs.
- *
- * @param {NormalizedPaper} paper
- * @param {string[]} matchedTopics
- * @return {boolean}
- */
-function isBoilerplateOnlyMatch(paper, matchedTopics) {
-  if (!BOILERPLATE_CONTEXT_TOPICS || BOILERPLATE_CONTEXT_TOPICS.length === 0) return false;
-
-  const onlyBoilerplateTopicsMatched = matchedTopics.every(function(topic) {
-    return BOILERPLATE_CONTEXT_TOPICS.indexOf(topic) !== -1;
-  });
-  if (!onlyBoilerplateTopicsMatched) return false;
-
-  if (!BOILERPLATE_CONTEXT_PATTERNS || BOILERPLATE_CONTEXT_PATTERNS.length === 0) return false;
-
-  const text = (paper.title + ' ' + paper.abstract).toLowerCase();
-
-  const hasBoilerplateLanguage = BOILERPLATE_CONTEXT_PATTERNS.some(function(pattern) {
-    return pattern.test(text);
-  });
-  if (!hasBoilerplateLanguage) return false;
-
-  // Check for field-core language that would indicate the paper is genuinely
-  // about the topic rather than just mentioning it in a compliance sentence.
-  // Populate this list with terms specific to your field's actual subject
-  // matter — words that appear in papers ABOUT the topic, not just adjacent to it.
-  const fieldCoreTerms = MIND_VOCAB || [];
-  const hasFieldCoreLanguage = fieldCoreTerms.some(function(term) {
-    return new RegExp('\\b' + escapeRegExp(term) + '\\b', 'i').test(text);
-  });
-  if (hasFieldCoreLanguage) return false;
-
-  return true;
 }
 
 /**
  * Filters a list of NormalizedPapers down to only the relevant ones, and
  * attaches the matched topic list to each surviving paper (as
- * `matchedTopics`) so relevanceScore.gs / writeToSheet.gs / postToSlack.gs
- * can display WHY a paper was flagged, not just that it was.
+ * `matchedTopics`, plus the structured `relevanceMatches`) so
+ * relevanceScore.gs / writeToSheet.gs / postToSlack.gs can show WHY a paper
+ * was flagged, not just that it was.
  *
  * @param {NormalizedPaper[]} papers
- * @return {NormalizedPaper[]} Relevant papers only, each with a
- *         `matchedTopics: string[]` field added.
+ * @return {NormalizedPaper[]} Relevant papers only, each with
+ *         `matchedTopics: string[]` and `relevanceMatches: Object[]` added.
  */
 function filterToRelevantPapers(papers) {
   const relevant = [];
@@ -302,6 +328,7 @@ function filterToRelevantPapers(papers) {
     const result = checkRelevance(paper);
     if (result.isRelevant) {
       paper.matchedTopics = result.matchedTopics;
+      paper.relevanceMatches = result.matches;
       relevant.push(paper);
     }
   });

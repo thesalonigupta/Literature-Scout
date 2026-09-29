@@ -32,7 +32,7 @@
  *      want a PubMed-specific column — not required, 'pubmed' just shows
  *      up as a normal value in the existing Source column.
  *
- * Two-step E-utilities workflow, once per topic:
+ * Two-step E-utilities workflow, once per query in FETCH_QUERIES (config.gs):
  *   1. ESearch: text query -> list of PMIDs (PubMed IDs)
  *   2. EFetch: PMIDs -> full XML records (title, abstract, authors, dates)
  *
@@ -48,7 +48,7 @@ const PUBMED_ESEARCH_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esear
 const PUBMED_EFETCH_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
 
 /**
- * Fetches recent PubMed articles across all TOPICS.
+ * Fetches recent PubMed articles for every query in FETCH_QUERIES.
  *
  * @return {NormalizedPaper[]}
  */
@@ -57,7 +57,7 @@ function fetchPubMed() {
   const cutoff = getLookbackCutoffDate();
   const allPapers = [];
 
-  TOPICS.forEach(function(topic, index) {
+  FETCH_QUERIES.forEach(function(topic, index) {
     // Same rate-limit precaution as fetchOpenAlex.gs/fetchCrossref.gs —
     // NCBI's stated limit is 3 requests/sec without an API key; this
     // pipeline makes 2 requests per topic (ESearch + EFetch), so a sleep

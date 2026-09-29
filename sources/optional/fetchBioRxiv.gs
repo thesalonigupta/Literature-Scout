@@ -143,8 +143,8 @@ function fetchBioRxivCategoryRecords(category, startDate, endDate, maxPages) {
 }
 
 /**
- * Checks whether a raw bioRxiv record's title or abstract mentions any
- * TOPICS term. Same short-circuit purpose as recordMentionsAnyTopic() in
+ * Checks whether a raw bioRxiv record's title or abstract passes the
+ * relevance rules (evaluateRelevanceText in relevanceFilter.gs). Same short-circuit purpose as recordMentionsAnyTopic() in
  * fetchPhilPapers.gs — the shared relevanceFilter.gs still runs
  * downstream as the real filter; this just avoids normalizing records
  * about to be discarded. Named distinctly (with a BioRxiv suffix) so it
@@ -155,10 +155,7 @@ function fetchBioRxivCategoryRecords(category, startDate, endDate, maxPages) {
  * @return {boolean}
  */
 function recordMentionsAnyTopicBioRxiv(record) {
-  const haystack = ((record.title || '') + ' ' + (record.abstract || '')).toLowerCase();
-  return TOPICS.some(function(topic) {
-    return haystack.indexOf(topic.toLowerCase()) !== -1;
-  });
+  return evaluateRelevanceText(record.title, record.abstract).isRelevant;
 }
 
 /**

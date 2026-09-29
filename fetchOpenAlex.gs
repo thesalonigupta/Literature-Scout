@@ -7,9 +7,9 @@
  * mailto=you@example.com "polite pool" system is DEPRECATED and no
  * longer affects rate limits at all. Every request now requires an
  * api_key param. Without one you get a one-time $0.10/day budget (easily
- * exhausted by a single run across your full topic list); WITH a free key
- * you get $1.00/day, which comfortably covers this pipeline's usage.
- * Getting a key is free — sign up at openalex.org, copy it from
+ * exhausted by a single run across FETCH_QUERIES); WITH a free key you get
+ * $1.00/day, which comfortably covers this pipeline's usage. Getting a
+ * key is free — sign up at openalex.org, copy it from
  * openalex.org/settings/api. See PropertiesService setup note below.
  *
  * Role in this pipeline: SECONDARY / redundant check, not a primary
@@ -23,10 +23,11 @@
  * later if it's not pulling its weight relative to the extra API calls.
  *
  * SETUP REQUIRED before this file will work: the API key must be stored
- * in Script Properties (NOT hardcoded here). In the Apps Script editor:
- * Project Settings (gear icon) > Script Properties > Add script property
- * > name it OPENALEX_API_KEY, paste your key as the value.
- * getOpenAlexApiKey() below reads it from there.
+ * in Script Properties (NOT hardcoded here, same convention as the Slack
+ * webhook URL). In the Apps Script editor: Project Settings (gear icon) >
+ * Script Properties > Add script property > name it OPENALEX_API_KEY,
+ * paste your key as the value. getOpenAlexApiKey() below reads it from
+ * there.
  *
  * API docs: https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication
  */
@@ -55,7 +56,8 @@ function getOpenAlexApiKey() {
 
 
 /**
- * Fetches recent OpenAlex works across all TOPICS.
+ * Fetches recent OpenAlex works for every query in FETCH_QUERIES
+ * (config.gs).
  *
  * @return {NormalizedPaper[]}
  */
@@ -64,10 +66,10 @@ function fetchOpenAlex() {
   const cutoff = getLookbackCutoffDate();
   const allPapers = [];
 
-  TOPICS.forEach(function(topic, index) {
+  FETCH_QUERIES.forEach(function(topic, index) {
     // OpenAlex rate-limits aggressively when many requests arrive in
     // quick succession (seen in practice: 429 "Too Many Requests" across
-    // most of a topic loop with no delay). A short pause between
+    // most of a long topic loop with no delay). A short pause between
     // requests keeps us under that threshold. Skipped on the very first
     // request since there's nothing to wait after yet.
     if (index > 0) {
@@ -96,7 +98,18 @@ function fetchOpenAlexForTopic(topic, cutoffDate, settings) {
   // with the colon and comma sent literally. Only the actual VALUES that
   // might contain special characters get encoded individually; the
   // filter syntax itself stays literal.
-  const filterString = 'from_publication_date:' + encodeURIComponent(cutoffDate);
+  // Upper bound: see getPublicationDateCeiling() in config.gs. Without it,
+  // sort=publication_date:desc fills the result window with records
+  // carrying bogus future dates (2029, 2035, 2050...).
+  // Type filter: SOURCE_SETTINGS.openalex.includeTypes (config.gs).
+  // OpenAlex uses "|" for OR within one filter; the pipe is percent-encoded
+  // because it is a value character, not filter syntax.
+  const includeTypes = settings.includeTypes || [];
+  const filterString = 'from_publication_date:' + encodeURIComponent(cutoffDate) +
+    ',to_publication_date:' + encodeURIComponent(getPublicationDateCeiling()) +
+    (includeTypes.length > 0
+      ? ',type:' + includeTypes.map(encodeURIComponent).join('%7C')
+      : '');
 
   const params = [
     'search=' + encodeURIComponent(topic),

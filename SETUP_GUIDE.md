@@ -53,7 +53,7 @@ The key should never be pasted directly into a code file. Store it in Script Pro
 Open `config.gs` in the editor and find `politeEmail` under the crossref settings. Replace the placeholder with a real contact email (this is not a login — just identifies who's making the requests). Save.
 
 **Step 9: Configure your topics**
-Open `config.gs` in the editor. The file ships with illustrative placeholder topics. Replace the `TOPICS` list with your own field's vocabulary, and update the `TOPIC_TIER_CORE`, `TOPIC_TIER_SUPPORTING`, and `TOPIC_TIER_CONTEXT` lists to match (one entry per topic). See the README's "Adapting This to Your Field" section for guidance.
+Open `config.gs` in the editor. The file ships with illustrative placeholder topics. Replace the relevance lists in section 1 (`CORE_TOPICS`, `TOPIC_ANCHORS`, `CONTEXT_TOPICS`, `WEAK_TOPICS`) and the search lists in section 1B (`FETCH_QUERIES`, `ARXIV_QUERIES`) with your own field's vocabulary. Then select `validateTopicTiers` (in `relevanceScore.gs`) from the function dropdown and run it to catch typos. See the README's "Adapting This to Your Field" section for guidance.
 
 **Step 10: Create the Digest sheet**
 - In the function dropdown at the top of the editor, select `setupDigestSheet`.

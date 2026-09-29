@@ -32,8 +32,8 @@
  *
  * OAI-PMH protocol basics used here:
  *   ListRecords with metadataPrefix=oai_dc and a `from` date filters by
- *   the record's last-modified date. We then filter by TOPICS
- *   client-side, the same way fetchArxiv.gs filters by date client-side,
+ *   the record's last-modified date. We then filter by the relevance
+ *   rules (config.gs section 1) client-side, the same way fetchArxiv.gs filters by date client-side,
  *   since OAI-PMH has no keyword search of its own.
  */
 
@@ -41,7 +41,7 @@ const PHILPAPERS_OAI_BASE = 'https://philpapers.org/oai.pl';
 
 /**
  * Fetches recently-added PhilPapers OAI records and filters to those
- * matching TOPICS.
+ * matching the relevance rules (config.gs section 1).
  *
  * @return {NormalizedPaper[]}
  */
@@ -178,8 +178,8 @@ function parsePhilPapersOaiResponse(xmlText) {
 }
 
 /**
- * Checks whether a raw OAI record's title or description mentions any
- * TOPICS term. Same OR-match logic as relevanceFilter.gs, but applied
+ * Checks whether a raw OAI record's title or description passes the
+ * relevance rules. Same rules as relevanceFilter.gs, but applied
  * here (pre-normalization) to avoid normalizing records we're about to
  * discard — see file header for why this filtering happens in this file
  * rather than relying solely on the shared relevanceFilter.gs pass later.
@@ -190,10 +190,7 @@ function parsePhilPapersOaiResponse(xmlText) {
  * @return {boolean}
  */
 function recordMentionsAnyTopic(record) {
-  const haystack = (record.title + ' ' + record.description).toLowerCase();
-  return TOPICS.some(function(topic) {
-    return haystack.indexOf(topic.toLowerCase()) !== -1;
-  });
+  return evaluateRelevanceText(record.title, record.description).isRelevant;
 }
 
 /**
