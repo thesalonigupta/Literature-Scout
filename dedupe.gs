@@ -2,24 +2,57 @@
  * dedupe.gs
  *
  * Decides whether a NormalizedPaper (see normalize.gs) has already been
- * logged, by checking THREE identifier columns, in order of trust:
+ * logged, by checking FOUR identifiers, in order of trust:
  *
  *   1. DOI          (most trustworthy — globally unique, rarely wrong)
  *   2. arXiv ID      (trustworthy within arXiv, version-stripped)
- *   3. Title hash    (least trustworthy — exact-match only, but it's the
- *                      one identifier every paper has, regardless of
- *                      source, so it's the universal fallback)
+ *   3. Title hash    (least trustworthy of the ID columns — exact-match
+ *                      only, but it's the one identifier every paper has,
+ *                      regardless of source, so it's the universal fallback)
+ *   4. Abstract fingerprint (see below)
  *
  * Why not just one identifier: the same paper can surface from different
  * sources with different available IDs (e.g. first seen on arXiv with no
  * DOI yet, later seen via Crossref once published with a DOI). Checking
- * all three means either appearance correctly recognizes the other.
+ * all of them means either appearance correctly recognizes the other.
  *
  * Design choice: this loads the full identifier columns into memory ONCE
  * per run (see loadExistingIdentifiers) rather than searching the Sheet
  * per-candidate. At realistic volumes (a few thousand rows after a couple
  * years of weekly runs) this is trivially fast and far simpler than a
  * TextFinder-per-row approach.
+ *
+ * ---------------------------------------------------------------------
+ * THE ABSTRACT FINGERPRINT
+ * ---------------------------------------------------------------------
+ *
+ * Some duplicates share NONE of the three IDs. Observed in practice: a
+ * journal article that appeared twice via OpenAlex, once under its English
+ * title with a DOI and once under its original-language title from the
+ * journal's own site with no DOI. Different title, different link, no
+ * shared ID, but a word-for-word identical English abstract. Versioned
+ * repository deposits (figshare "v1" and "v4" of the same manuscript, with
+ * different DOIs) behave the same way.
+ *
+ * The fingerprint is the first ABSTRACT_FINGERPRINT_LENGTH letters and
+ * digits of the abstract, lowercased, with tags, HTML entities, spaces and
+ * punctuation removed. Abstracts shorter than that get NO fingerprint, so
+ * placeholder abstracts ("International audience", ".", "Abstract") can
+ * never collide.
+ *
+ * Two things to know:
+ *   - Only Latin letters and digits count, so an abstract written
+ *     entirely in a non-Latin script gets no fingerprint. That's
+ *     deliberate: it errs toward keeping a paper rather than dropping it.
+ *   - Against papers already in the Sheet, the fingerprint is taken from
+ *     the Digest's "Abstract Snippet" column. The Removed tab doesn't
+ *     store abstracts, so a rejected paper can still come back if it
+ *     reappears with different IDs.
+ *
+ * When two copies in the same run match ONLY on abstract, the copy with a
+ * DOI is kept. Every abstract-only match is logged (View > Logs) with
+ * both titles, since this is the fuzziest of the four checks and worth
+ * being able to audit.
  *
  * ---------------------------------------------------------------------
  * THE REMOVED TAB — read this before changing how rejected papers are
@@ -54,6 +87,23 @@
  * you want to be able to answer that from the sheet rather than by
  * guessing.
  */
+
+/**
+ * How many letters/digits of an abstract make up its fingerprint.
+ * Abstracts with fewer than this many get no fingerprint at all.
+ *
+ * 200 is long enough that two DIFFERENT papers sharing it is very
+ * unlikely, and short enough to fit inside the Digest's abstract snippet
+ * (which is what previously-logged papers are compared against).
+ */
+const ABSTRACT_FINGERPRINT_LENGTH = 200;
+
+/**
+ * Name of the Digest column holding the abstract snippet. Looked up by
+ * header text rather than column number so reordering columns can't
+ * silently point this at the wrong data.
+ */
+const ABSTRACT_SNIPPET_HEADER = 'Abstract Snippet';
 
 /**
  * Name of the Removed tab. Read from SHEET_TABS.removed if present, so
@@ -133,31 +183,88 @@ function setupRemovedSheet() {
 }
 
 /**
+ * Builds the abstract fingerprint described in the file header.
+ *
+ * @param {string} text - An abstract, or an abstract snippet from the Sheet.
+ * @return {string} The fingerprint, or '' if the abstract is too short
+ *         (or too non-Latin) to fingerprint safely.
+ */
+function abstractFingerprint(text) {
+  const normalized = String(text || '')
+    .replace(/&[#a-z0-9]+;/gi, ' ')   // HTML entities, e.g. &lt;p&gt;
+    .replace(/<[^>]*>/g, ' ')         // any real tags left over
+    .toLowerCase()
+    .replace(/^\s*abstract\b/, '')    // some sources prefix "Abstract", some don't
+    .replace(/[^a-z0-9]/g, '');
+
+  if (normalized.length < ABSTRACT_FINGERPRINT_LENGTH) return '';
+  return normalized.slice(0, ABSTRACT_FINGERPRINT_LENGTH);
+}
+
+/**
  * Loads every known identifier into Sets for fast lookup — from the
  * Digest tab (papers already logged) AND the Removed tab (papers a
  * researcher has rejected). Call this ONCE at the start of a run, then
  * pass the result to isDuplicate() for every candidate paper.
  *
- * @return {{dois: Set<string>, arxivIds: Set<string>, titleHashes: Set<string>}}
+ * @return {{dois: Set<string>, arxivIds: Set<string>, titleHashes: Set<string>,
+ *          abstractPrints: Set<string>}}
  */
 function loadExistingIdentifiers() {
   const existing = {
     dois: new Set(),
     arxivIds: new Set(),
     titleHashes: new Set(),
+    abstractPrints: new Set(),
   };
+
+  const digest = getDigestSheet();
 
   addIdentifiersFromSheet(
     existing,
-    getDigestSheet(),
+    digest,
     DIGEST_COLUMNS.doi,
     DIGEST_COLUMNS.arxivId,
     DIGEST_COLUMNS.titleHash
   );
 
+  addAbstractPrintsFromDigest(existing, digest);
+
   addIdentifiersFromRemovedSheet(existing);
 
   return existing;
+}
+
+/**
+ * Adds a fingerprint for every Digest row's abstract snippet.
+ *
+ * Tolerant like the Removed loader: if the column can't be found, it logs
+ * and carries on with the other three checks rather than failing the run.
+ *
+ * @param {{abstractPrints: Set}} existing - Mutated in place.
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} digest
+ */
+function addAbstractPrintsFromDigest(existing, digest) {
+  const column = DIGEST_HEADERS.indexOf(ABSTRACT_SNIPPET_HEADER) + 1;
+
+  if (column === 0) {
+    Logger.log(
+      'loadExistingIdentifiers: no "%s" column in DIGEST_HEADERS, so abstract ' +
+      'matching only runs within a single batch this run.',
+      ABSTRACT_SNIPPET_HEADER
+    );
+    return;
+  }
+
+  const lastRow = digest.getLastRow();
+  if (lastRow < 2) return;
+
+  const snippets = digest.getRange(2, column, lastRow - 1, 1).getValues();
+
+  snippets.forEach(function(row) {
+    const print = abstractFingerprint(row[0]);
+    if (print) existing.abstractPrints.add(print);
+  });
 }
 
 /**
@@ -239,8 +346,8 @@ function addIdentifiersFromSheet(existing, sheet, doiColumn, arxivColumn, titleH
  * previously rejected.
  *
  * @param {NormalizedPaper} paper
- * @param {{dois: Set, arxivIds: Set, titleHashes: Set}} existing - From
- *        loadExistingIdentifiers().
+ * @param {{dois: Set, arxivIds: Set, titleHashes: Set, abstractPrints: Set}} existing -
+ *        From loadExistingIdentifiers(), or the within-batch equivalent.
  * @return {{isDupe: boolean, matchedOn: string|null}}
  */
 function isDuplicate(paper, existing) {
@@ -256,7 +363,29 @@ function isDuplicate(paper, existing) {
     return { isDupe: true, matchedOn: 'titleHash' };
   }
 
+  if (existing.abstractPrints) {
+    const print = abstractFingerprint(paper.abstract);
+    if (print && existing.abstractPrints.has(print)) {
+      return { isDupe: true, matchedOn: 'abstract' };
+    }
+  }
+
   return { isDupe: false, matchedOn: null };
+}
+
+/**
+ * Records a kept paper's identifiers so later candidates in the same
+ * batch can be checked against it.
+ *
+ * @param {NormalizedPaper} paper
+ * @param {string} print - Its abstract fingerprint ('' if none).
+ * @param {{dois: Set, arxivIds: Set, titleHashes: Set, abstractPrints: Set}} seen
+ */
+function recordInBatch(paper, print, seen) {
+  if (paper.doi) seen.dois.add(paper.doi);
+  if (paper.arxivId) seen.arxivIds.add(paper.arxivId);
+  if (paper.titleHash) seen.titleHashes.add(paper.titleHash);
+  if (print) seen.abstractPrints.add(print);
 }
 
 /**
@@ -279,26 +408,58 @@ function filterToNewPapers(candidates) {
     dois: new Set(),
     arxivIds: new Set(),
     titleHashes: new Set(),
+    abstractPrints: new Set(),
   };
+
+  // fingerprint -> index in newPapers, so an abstract-only match can swap
+  // in a better copy of a paper already kept.
+  const keptIndexByPrint = {};
 
   const newPapers = [];
 
   candidates.forEach(function(paper) {
     const dupeCheck = isDuplicate(paper, existing);
     if (dupeCheck.isDupe) {
+      if (dupeCheck.matchedOn === 'abstract') {
+        Logger.log(
+          'filterToNewPapers: skipped "%s" — same abstract as a paper already in the Sheet.',
+          paper.title
+        );
+      }
       return; // already logged in a previous run, or previously rejected — skip
     }
 
+    const print = abstractFingerprint(paper.abstract);
+
     const withinBatchDupe = isDuplicate(paper, seenInThisBatch);
     if (withinBatchDupe.isDupe) {
+      // Abstract-only match: usually a translation or a second repository
+      // copy. Prefer whichever copy has a DOI.
+      if (withinBatchDupe.matchedOn === 'abstract') {
+        const index = keptIndexByPrint[print];
+        const kept = index !== undefined ? newPapers[index] : null;
+
+        if (kept && paper.doi && !kept.doi) {
+          Logger.log(
+            'filterToNewPapers: "%s" replaces "%s" — same abstract, and this copy has a DOI.',
+            paper.title, kept.title
+          );
+          newPapers[index] = paper;
+          recordInBatch(paper, print, seenInThisBatch);
+        } else {
+          Logger.log(
+            'filterToNewPapers: skipped "%s" — same abstract as "%s" earlier in this run.',
+            paper.title, kept ? kept.title : '(unknown)'
+          );
+        }
+      }
       return; // same paper already pulled from a different source THIS run — skip
     }
 
     // Genuinely new — record it so later candidates in this same batch
     // can be checked against it, then keep it.
-    if (paper.doi) seenInThisBatch.dois.add(paper.doi);
-    if (paper.arxivId) seenInThisBatch.arxivIds.add(paper.arxivId);
-    if (paper.titleHash) seenInThisBatch.titleHashes.add(paper.titleHash);
+    recordInBatch(paper, print, seenInThisBatch);
+    if (print) keptIndexByPrint[print] = newPapers.length;
 
     newPapers.push(paper);
   });

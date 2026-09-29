@@ -11,7 +11,7 @@ Two more sources (PubMed, bioRxiv) are available as opt-in plug-ins in `sources/
 1. Create a new Google Sheet, open **Extensions → Apps Script**, and paste each `.gs` file into its own script file.
 2. Add `appsscript.json` via Project Settings → Show manifest file.
 3. Store your two credentials in Script Properties (see Steps 6–7 in Setup below): `OPENALEX_API_KEY` and, later, `SLACK_WEBHOOK_URL`.
-4. Edit `config.gs`: replace the placeholder topic list with your own research vocabulary and set your Crossref contact email. Then run `setupDigestSheet` and `setupRemovedSheet`, followed by `testFetchAllSourcesWithoutWriting`.
+4. Edit `config.gs`: replace the placeholder topic and search lists with your own research vocabulary and set your Crossref contact email. Then run `setupDigestSheet` and `setupRemovedSheet`, followed by `testFetchAllSourcesWithoutWriting`.
 
 Everything else is covered in the full setup below.
 
@@ -72,10 +72,24 @@ You can leave `SLACK.enabled` as `false` indefinitely if you prefer to check the
 **Test run (recommended first, and after any code change)**
 Select `testFetchAllSourcesWithoutWriting` from the function dropdown and click Run. This checks that all four sources are working without writing anything to the Sheet or posting to Slack. Check results under View → Logs or in the Executions panel. You should see one line per source with a candidate count. If any source shows an error, that source has a problem — the others still work independently.
 
-**Real run**
-Select `runLiteratureScout` from the function dropdown and click Run. This takes a few minutes: it fetches candidates, checks for duplicates, filters for relevance, writes results, and posts to Slack if enabled. When it finishes, check the Digest tab for new rows, the Run Log tab for a summary, and the Slack channel if configured.
+**Preview run (after editing your topic lists)**
+Select `previewRelevantPapers` and click Run. It fetches, dedupes, filters and ranks exactly like a real run, then lists every paper that *would* be added — with its tier, score and matched terms — in View → Logs. Nothing is written to the Sheet or posted to Slack, so you can run it as often as you like while tuning `config.gs`.
 
-Running it again will not create duplicates and will not re-post anything already posted — the deduplication step checks all three identifier types (DOI, arXiv ID, title hash) against every previously logged paper.
+**Real run**
+Select `runLiteratureScout` from the function dropdown and click Run. This takes a few minutes: it fetches candidates, checks for duplicates, filters for relevance, ranks what's left, writes results, and posts to Slack if enabled. When it finishes, check the Digest tab for new rows, the Run Log tab for a summary, and the Slack channel if configured.
+
+Running it again will not create duplicates and will not re-post anything already posted — the deduplication step checks every new paper's DOI, arXiv ID and title hash against every previously logged or removed paper. It also compares the start of each abstract, which catches the same paper appearing under two different titles (a translated title, or two versions of a repository deposit with different DOIs). When two copies in the same run match only on their abstract, the one with a DOI is kept.
+
+**Reading the Digest**
+
+Each run's new papers are written highest-ranked first. Two columns at the end of each row show the ranking:
+
+| Column | Meaning |
+|---|---|
+| Relevance Score | A number built from which terms matched, whether they are in the title, and how much of your field's vocabulary (`MIND_VOCAB` in `config.gs`) the paper uses. Higher is more relevant. |
+| Relevance Tier | **core** (read this), **adjacent** (skim this) or **context** (useful background at most). Sort or filter the sheet on this column. |
+
+Ranking never removes a paper; it only decides the order. The weights and tier cut-offs are in `RELEVANCE_SCORING` in `config.gs`. `SLACK.minTierForIndividualPosts` decides which tiers get their own Slack message. If your sheet predates these two columns, run `setupDigestSheet` once to add the headers, then `backfillRelevanceScores` to score the existing rows.
 
 **Reading the Run Log**
 
@@ -91,9 +105,9 @@ In the Apps Script editor, go to Triggers (clock icon) → Add Trigger. Choose `
 
 **Rejecting papers**
 
-Do not delete rows from the Digest tab. The Digest is the Scout's only memory of what it has already seen: a row's DOI, arXiv ID and title hash are the three fingerprints dedupe checks against. Delete the row and you delete the fingerprints, so the next time any source re-surfaces that paper the Scout treats it as new and logs it again.
+Do not delete rows from the Digest tab. The Digest is the Scout's only memory of what it has already seen: a row's DOI, arXiv ID, title hash and abstract are what dedupe checks against. Delete the row and you delete the fingerprints, so the next time any source re-surfaces that paper the Scout treats it as new and logs it again.
 
-Instead, select any cell in each row you want gone and use **Literature Scout → Move selected rows to Removed** in the Sheet's menu bar. That copies the identifiers to the Removed tab and then deletes the rows for you. The Removed tab keeps the title and link alongside the identifiers, so you can later answer "why isn't the Scout finding X?" by reading the sheet rather than guessing.
+Instead, select any cell in each row you want gone and use **Literature Scout → Move selected rows to Removed** in the Sheet's menu bar. That copies the identifiers to the Removed tab and then deletes the rows for you. The Removed tab keeps the title and link alongside the identifiers, so you can later answer "why isn't the Scout finding X?" by reading the sheet rather than guessing. It does not keep the abstract, so a removed paper can still come back if it reappears with a different DOI, arXiv ID and title.
 
 The menu appears automatically when you open the spreadsheet. If it is missing, reload the tab — Apps Script adds it via `onOpen`, which only fires on load.
 
@@ -102,7 +116,8 @@ The menu appears automatically when you open the spreadsheet. If it is missing, 
 - A source shows an error: re-run `testFetchAllSourcesWithoutWriting` — the error message usually explains what happened (missing API key, service temporarily down, etc.).
 - Nothing new after a real run: check the Run Log. If "New After Dedupe" is 0, everything found this time was already logged from a previous run — expected behavior if you run it again soon.
 - Slack messages are not arriving but the Sheet updated: check the Run Log's Errors column, or run `postTestMessageToSlack` to isolate whether it is a webhook configuration problem or something about that specific run.
-- A paper seems wrongly included or excluded: the relevance logic is in `relevanceFilter.gs` and the topic list is in `config.gs`.
+- A paper seems wrongly included or excluded: the relevance rules are in `config.gs` (section 1) and the logic that applies them is in `relevanceFilter.gs`. Run `previewRelevantPapers` after any change to see its effect before a real run.
+- A paper is ranked unexpectedly: paste its title and abstract into `explainScoreForSampleText()` in `relevanceScore.gs` and run it to see which parts of the score came from where.
 
 ---
 
