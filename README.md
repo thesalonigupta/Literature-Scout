@@ -89,7 +89,7 @@ Each run's new papers are written highest-ranked first. Two columns at the end o
 | Relevance Score | A number built from which terms matched, whether they are in the title, and how much of your field's vocabulary (`MIND_VOCAB` in `config.gs`) the paper uses. Higher is more relevant. |
 | Relevance Tier | **core** (read this), **adjacent** (skim this) or **context** (useful background at most). Sort or filter the sheet on this column. |
 
-Ranking never removes a paper; it only decides the order. The weights and tier cut-offs are in `RELEVANCE_SCORING` in `config.gs`. `SLACK.minTierForIndividualPosts` decides which tiers get their own Slack message. If your sheet predates these two columns, run `setupDigestSheet` once to add the headers, then `backfillRelevanceScores` to score the existing rows.
+Ranking never removes a paper; it only decides the order. The weights and tier cut-offs are in `RELEVANCE_SCORING` in `config.gs`. `SLACK.minTierForIndividualPosts` decides which tiers get their own Slack message. If your sheet predates these two columns, run `setupDigestSheet` once to add the headers, then `backfillRelevanceScores` to score the existing rows (or `backfillBlankRelevanceScores` to fill only the empty ones).
 
 **Reading the Run Log**
 

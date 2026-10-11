@@ -328,6 +328,13 @@ const LOW_QUALITY_TEXT_PATTERNS = [
 //   supporting — a CONTEXT_TOPICS term
 //   context    — any term listed in WEAK_TOPICS (whichever list it is in)
 //
+// Tier guard rails (see relevanceScore.gs), applied after the cut-offs:
+//   - A paper that matched ONLY weak terms is always 'context'.
+//   - 'core' needs one non-weak CORE_TOPICS term, or two different non-weak
+//     CONTEXT_TOPICS terms; one context term alone tops out at 'adjacent'.
+//   - 'core' needs at least minMindVocabForCore distinct field vocabulary
+//     words (below).
+//
 // How the score is built, in plain terms:
 //   - Each distinct matched term contributes points based on its weight.
 //   - A term that appears in the TITLE counts double (titles are a much
@@ -368,12 +375,10 @@ const RELEVANCE_SCORING = {
   coreThreshold: 18,
   adjacentThreshold: 10,
 
-  // Guard rails, applied AFTER the thresholds:
-  //   - A paper that matched no core or supporting term can never reach the
-  //     Core tier, however many weak terms it stacked up.
-  //   - A paper with a real abstract needs at least this many distinct
-  //     field vocabulary words to reach Core. This stops a title pun or a
-  //     one-line mention from topping the sheet.
+  // Guard rails, applied AFTER the thresholds (summary above the table):
+  //   - A paper needs at least this many distinct field vocabulary words
+  //     (section 1C) to reach Core. This stops a title pun or a one-line
+  //     mention from topping the sheet.
   minMindVocabForCore: 2,
 };
 
@@ -383,7 +388,10 @@ const RELEVANCE_SCORING = {
 const PREPRINT_DOI_PREFIXES = [
   '10.6084',    // figshare
   '10.17605',   // OSF
+  '10.31219',   // OSF Preprints
+  '10.31234',   // PsyArXiv
   '10.31235',   // SocArXiv (OSF preprints)
+  '10.21203',   // Research Square
   '10.13140',   // ResearchGate
   '10.17613',   // Humanities Commons
   '10.33774',   // Cambridge Open Engage
