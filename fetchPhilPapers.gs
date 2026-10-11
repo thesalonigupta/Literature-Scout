@@ -35,13 +35,24 @@
  *   the record's last-modified date. We then filter by the relevance
  *   rules (config.gs section 1) client-side, the same way fetchArxiv.gs filters by date client-side,
  *   since OAI-PMH has no keyword search of its own.
+ *
+ * OLD PAPERS RE-ENTERING AS NEW
+ * -----------------------------
+ * The `from` date is the date a RECORD was added or edited, not when the
+ * paper was published. So an author uploading a years-old paper today makes
+ * it look new. Dublin Core records also carry dc:date, the paper's own date
+ * (usually just a year). Records whose latest dc:date year is older than
+ * SOURCE_SETTINGS.philpapers.maxAgeYears (config.gs) are dropped. A record
+ * with no usable dc:date is kept (fail open), so nothing genuinely new is
+ * lost to missing metadata.
  */
 
 const PHILPAPERS_OAI_BASE = 'https://philpapers.org/oai.pl';
 
 /**
  * Fetches recently-added PhilPapers OAI records and filters to those
- * matching the relevance rules (config.gs section 1).
+ * matching the relevance rules (config.gs section 1) and recent enough to
+ * be new work.
  *
  * @return {NormalizedPaper[]}
  */
@@ -51,11 +62,38 @@ function fetchPhilPapers() {
 
   // OAI-PMH gives us everything in the date window, regardless of topic —
   // filter here so we don't normalize records we're about to throw away.
-  const relevant = records.filter(recordMentionsAnyTopic);
+  const onTopic = records.filter(recordMentionsAnyTopic);
 
-  return relevant
+  const recent = onTopic.filter(function(record) {
+    if (isOldPhilPapersRecord(record)) {
+      Logger.log('fetchPhilPapers: skipping old paper re-indexed as new (%s): %s',
+        record.paperYears.join('/'), record.title);
+      return false;
+    }
+    return true;
+  });
+
+  return recent
     .map(mapOaiRecordToNormalizedPaper)
     .filter(function(paper) { return paper !== null; });
+}
+
+/**
+ * True if the record's own publication year (dc:date) is older than
+ * SOURCE_SETTINGS.philpapers.maxAgeYears. Uses the LATEST year found, so a
+ * paper with an old original date and a new revision date is kept.
+ *
+ * @param {Object} record - From parsePhilPapersOaiResponse
+ * @return {boolean}
+ */
+function isOldPhilPapersRecord(record) {
+  const maxAgeYears = SOURCE_SETTINGS.philpapers.maxAgeYears;
+  if (typeof maxAgeYears !== 'number') return false;
+  if (!record.paperYears || record.paperYears.length === 0) return false;
+
+  const latestYear = Math.max.apply(null, record.paperYears);
+  const oldestAllowedYear = new Date().getFullYear() - maxAgeYears;
+  return latestYear < oldestAllowedYear;
 }
 
 /**
@@ -64,8 +102,7 @@ function fetchPhilPapers() {
  * pages so a misconfigured date range can't cause a runaway loop.
  *
  * @param {string} fromDate - ISO 'YYYY-MM-DD'
- * @return {Array<{title: string, authors: string[], description: string,
- *          identifier: string, date: string}>}
+ * @return {Array<Object>}
  */
 function fetchPhilPapersOaiRecords(fromDate) {
   const settings = SOURCE_SETTINGS.philpapers;
@@ -142,6 +179,15 @@ function parsePhilPapersOaiResponse(xmlText) {
     const creatorElements = dc ? dc.getChildren('creator', dcNs) : [];
     const authors = creatorElements.map(function(el) { return el.getText().trim(); });
 
+    // The paper's own date(s), as opposed to the record datestamp above.
+    // Usually just "2024"; sometimes a full date. Keep only the years.
+    const dateElements = dc ? dc.getChildren('date', dcNs) : [];
+    const paperYears = [];
+    dateElements.forEach(function(el) {
+      const match = el.getText().match(/\b(1[5-9]\d{2}|20\d{2})\b/);
+      if (match) paperYears.push(Number(match[1]));
+    });
+
     // PhilPapers OAI records sometimes carry the canonical web URL as one
     // of several dc:identifier or dc:relation elements rather than the
     // OAI identifier itself — fall back to the OAI identifier if no
@@ -163,6 +209,7 @@ function parsePhilPapersOaiResponse(xmlText) {
       identifier: identifier,
       link: link,
       date: datestamp ? datestamp.slice(0, 10) : '',
+      paperYears: paperYears,
     };
   });
 

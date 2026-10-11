@@ -459,6 +459,12 @@ const SOURCE_SETTINGS = {
   },
   philpapers: {
     maxResults: 50,
+    // PhilPapers' OAI date is when a record was ADDED, so an author uploading
+    // an old paper makes it look new. Records whose own publication year
+    // (dc:date) is older than this many years before the current year are
+    // skipped. 1 = this year and last year only. Records with no year are
+    // kept. Delete this line to turn the check off.
+    maxAgeYears: 1,
   },
   openalex: {
     // Max results per query in FETCH_QUERIES.
