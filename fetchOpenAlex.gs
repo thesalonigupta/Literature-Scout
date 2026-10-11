@@ -29,6 +29,12 @@
  * paste your key as the value. getOpenAlexApiKey() below reads it from
  * there.
  *
+ * Preprints and self-deposits carrying a FUTURE publication date are
+ * dropped (see isBogusFutureDatedWork). A preprint can't have been
+ * published in the future; seen in practice on repository deposits dated
+ * months ahead. Journal articles and book chapters with future dates are
+ * kept, since online-first papers legitimately carry their print-issue date.
+ *
  * API docs: https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication
  */
 
@@ -171,6 +177,14 @@ function mapOpenAlexWorkToNormalizedPaper(work) {
   const title = work.title || work.display_name || '';
   if (!title) return null;
 
+  const doi = work.doi ? normalizeDoi(work.doi) : null;
+
+  if (isBogusFutureDatedWork(work, doi)) {
+    Logger.log('mapOpenAlexWorkToNormalizedPaper: skipping future-dated %s (%s): %s',
+      work.type || 'work', work.publication_date, title);
+    return null;
+  }
+
   const authors = (work.authorships || [])
     .map(function(authorship) {
       return authorship.author ? authorship.author.display_name : '';
@@ -181,8 +195,6 @@ function mapOpenAlexWorkToNormalizedPaper(work) {
   // OpenAlex stores abstracts as an "inverted index" (word -> positions)
   // rather than plain text, for copyright reasons. Reconstruct plain text.
   const abstract = reconstructAbstractFromInvertedIndex(work.abstract_inverted_index);
-
-  const doi = work.doi ? normalizeDoi(work.doi) : null;
 
   const link = work.primary_location && work.primary_location.landing_page_url
     ? work.primary_location.landing_page_url
@@ -212,6 +224,24 @@ function mapOpenAlexWorkToNormalizedPaper(work) {
     Logger.log('mapOpenAlexWorkToNormalizedPaper: skipping work due to: %s', err);
     return null;
   }
+}
+
+/**
+ * True for a preprint or self-deposit (OpenAlex type 'preprint', or a DOI
+ * in PREPRINT_DOI_PREFIXES) whose publication date is after today.
+ *
+ * @param {Object} work
+ * @param {string|null} doi
+ * @return {boolean}
+ */
+function isBogusFutureDatedWork(work, doi) {
+  const published = work.publication_date || '';
+  if (!published) return false;
+
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (published <= today) return false;
+
+  return work.type === 'preprint' || isPreprintDoi(doi);
 }
 
 /**

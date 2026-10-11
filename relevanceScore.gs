@@ -38,6 +38,17 @@
  * how papers rank. After editing those lists, run validateTopicTiers() once
  * to catch typos.
  *
+ * GUARD RAILS (applied after the thresholds)
+ * ------------------------------------------
+ *   1. A paper that matched ONLY weak terms is always 'context'. These are
+ *      the "mentioned once in passing" papers. They stay in the Sheet but
+ *      rank at the bottom.
+ *   2. 'core' needs either one non-weak CORE_TOPICS term or two different
+ *      non-weak context terms. A single context term, however high it
+ *      scores, is not enough.
+ *   3. 'core' needs at least minMindVocabForCore distinct field vocabulary
+ *      words. A title pun uses exactly one.
+ *
  * KNOWN LIMITATIONS
  * -----------------
  *  - This is keyword scoring, not comprehension. A paper whose title uses
@@ -105,6 +116,7 @@ function scorePaper(paper, matches) {
 
   let topicPoints = 0;
   let coreOrSupportingCount = 0;
+  let coreCount = 0;
 
   topicMatches.forEach(function(match) {
     const tier = getTopicTier(match);
@@ -120,6 +132,9 @@ function scorePaper(paper, matches) {
 
     if (tier === 'core' || tier === 'supporting') {
       coreOrSupportingCount++;
+    }
+    if (tier === 'core') {
+      coreCount++;
     }
   });
 
@@ -151,6 +166,7 @@ function scorePaper(paper, matches) {
 
   const tier = assignTier(score, {
     coreOrSupportingCount: coreOrSupportingCount,
+    coreCount: coreCount,
     mindVocabCount: mindVocabCount,
     hasRealAbstract: hasRealAbstract,
   });
@@ -172,16 +188,21 @@ function scorePaper(paper, matches) {
 }
 
 /**
- * Turns a raw score into a tier label, applying the guard rails described in
- * RELEVANCE_SCORING (config.gs).
+ * Turns a raw score into a tier label, applying the guard rails described
+ * at the top of this file.
  *
  * @param {number} score
- * @param {{coreOrSupportingCount: number, mindVocabCount: number,
- *          hasRealAbstract: boolean}} signals
+ * @param {{coreOrSupportingCount: number, coreCount: number,
+ *          mindVocabCount: number, hasRealAbstract: boolean}} signals
+ *        coreOrSupportingCount and coreCount count non-weak terms only.
  * @return {string} 'core' | 'adjacent' | 'context'
  */
 function assignTier(score, signals) {
   const weights = RELEVANCE_SCORING;
+
+  // Guard 1: weak terms alone are always context, no matter how many of
+  // them stacked up or how high they scored.
+  if (signals.coreOrSupportingCount === 0) return 'context';
 
   let tier;
   if (score >= weights.coreThreshold) {
@@ -194,17 +215,16 @@ function assignTier(score, signals) {
 
   if (tier !== 'core') return tier;
 
-  // Guard 1: weak terms alone can never make a paper Core, no matter how
-  // many of them stacked up. This is what keeps a paper naming many
-  // weak terms out of the top of the sheet.
-  if (signals.coreOrSupportingCount === 0) {
+  // Guard 2: core needs one non-weak core term or two different non-weak
+  // context terms. One context term alone can score high (title doubling
+  // plus vocabulary bonus) without the paper being about the field.
+  if (signals.coreCount === 0 && signals.coreOrSupportingCount < 2) {
     return 'adjacent';
   }
 
-  // Guard 2: a paper genuinely about your field uses more than one of your
+  // Guard 3: a paper genuinely about your field uses more than one of your
   // field's core vocabulary words. A title using a keyword figuratively
-  // typically uses exactly one. Only applied where there's enough text to
-  // judge — papers with no abstract are still checked against their title.
+  // typically uses exactly one.
   if (signals.mindVocabCount < weights.minMindVocabForCore) {
     return 'adjacent';
   }
@@ -310,6 +330,52 @@ function escapeRegExp(text) {
 }
 
 /**
+ * Rebuilds structured matches from the display strings stored in the
+ * Digest's Matched Topics column ("serial interval [infection]"). Used by
+ * the backfill in writeToSheet.gs: the stored abstract snippet is only 400
+ * characters, so terms the original run found later in the full abstract
+ * would otherwise be lost. Labels that are no longer in any topic list are
+ * skipped.
+ *
+ * @param {string[]} displayList
+ * @param {string} title
+ * @return {Object[]} Same shape as the matches from relevanceFilter.gs.
+ */
+function matchesFromDisplayStrings(displayList, title) {
+  const tiers = getCompiledTopicTiers();
+  const titleText = String(title || '');
+  const result = [];
+
+  displayList.forEach(function(display) {
+    const parts = String(display).trim().match(/^(.*?)(?: \[(.+)\])?$/);
+    if (!parts || !parts[1]) return;
+    const wanted = parts[1].toLowerCase();
+
+    let term = null;
+    let tier = null;
+    tiers.core.forEach(function(t) {
+      if (!term && t.label.toLowerCase() === wanted) { term = t; tier = 'core'; }
+    });
+    tiers.context.forEach(function(group) {
+      group.terms.forEach(function(t) {
+        if (!term && t.label.toLowerCase() === wanted) { term = t; tier = 'context'; }
+      });
+    });
+    if (!term) return;
+
+    result.push({
+      label: term.label,
+      display: display,
+      tier: tier,
+      weak: isWeakTopic(term.label),
+      titleHit: term.pattern.test(titleText),
+    });
+  });
+
+  return result;
+}
+
+/**
  * MAINTENANCE HELPER — run this from the Apps Script editor after editing
  * CORE_TOPICS, CONTEXT_TOPICS, TOPIC_ANCHORS or WEAK_TOPICS in config.gs.
  *
@@ -378,9 +444,10 @@ function validateTopicTiers() {
  * matched topics, each scoring component, and the final tier.
  */
 function explainScoreForSampleText() {
-  // ---- edit these two lines, then Run ----
+  // ---- edit these lines, then Run ----
   const title = 'Sample paper title here';
   const abstract = 'Paste the abstract text here to see how this paper would score.';
+  const doi = null;   // optional: a DOI string, to see the preprint penalty
   // ----------------------------------------
 
   const paper = makeNormalizedPaper({
@@ -390,6 +457,7 @@ function explainScoreForSampleText() {
     link: '',
     source: 'manual',
     publishedDate: '',
+    doi: doi,
   });
 
   const relevance = checkRelevance(paper);

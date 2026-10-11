@@ -23,21 +23,9 @@
 function runLiteratureScout() {
   const runStartedAt = new Date();
   const errors = [];
-  let candidates = [];
 
   // --- Step 1: Fetch from every enabled source ---
-  if (SOURCES_ENABLED.arxiv) {
-    candidates = candidates.concat(safelyFetch('arxiv', fetchArxiv, errors));
-  }
-  if (SOURCES_ENABLED.crossref) {
-    candidates = candidates.concat(safelyFetch('crossref', fetchCrossref, errors));
-  }
-  if (SOURCES_ENABLED.philpapers) {
-    candidates = candidates.concat(safelyFetch('philpapers', fetchPhilPapers, errors));
-  }
-  if (SOURCES_ENABLED.openalex) {
-    candidates = candidates.concat(safelyFetch('openalex', fetchOpenAlex, errors));
-  }
+  const candidates = fetchAllEnabledSources(errors);
 
   // --- Step 2: Dedupe (against Sheet history + within this batch) ---
   const newPapers = filterToNewPapers(candidates);
@@ -69,6 +57,33 @@ function runLiteratureScout() {
     relevantAfterFilter: relevantNewPapers.length,
     errors: errors,
   });
+}
+
+/**
+ * Fetches from every source enabled in SOURCES_ENABLED (config.gs).
+ * Shared by runLiteratureScout and previewRelevantPapers so the two can
+ * never disagree about which sources a run uses.
+ *
+ * @param {Array} errors - Mutated in place; failures get pushed here.
+ * @return {NormalizedPaper[]}
+ */
+function fetchAllEnabledSources(errors) {
+  let candidates = [];
+
+  if (SOURCES_ENABLED.arxiv) {
+    candidates = candidates.concat(safelyFetch('arxiv', fetchArxiv, errors));
+  }
+  if (SOURCES_ENABLED.crossref) {
+    candidates = candidates.concat(safelyFetch('crossref', fetchCrossref, errors));
+  }
+  if (SOURCES_ENABLED.philpapers) {
+    candidates = candidates.concat(safelyFetch('philpapers', fetchPhilPapers, errors));
+  }
+  if (SOURCES_ENABLED.openalex) {
+    candidates = candidates.concat(safelyFetch('openalex', fetchOpenAlex, errors));
+  }
+
+  return candidates;
 }
 
 /**
@@ -172,28 +187,16 @@ function testFetchAllSourcesWithoutWriting() {
 /**
  * Convenience function for manual testing: runs fetch, dedupe, and the
  * relevance filter and ranking exactly as runLiteratureScout does, then logs
- * every paper that WOULD be added, with its tier, score and matched topics. Writes nothing to the Sheet
- * and posts nothing to Slack, so it can be run as often as you like.
+ * every paper that WOULD be added, with its tier, score and matched topics.
+ * Writes nothing to the Sheet and posts nothing to Slack, so it can be run as
+ * often as you like.
  *
  * Use it after editing the topic lists in config.gs to see what the change
  * does before committing to a real run.
  */
 function previewRelevantPapers() {
   const errors = [];
-  let candidates = [];
-
-  if (SOURCES_ENABLED.arxiv) {
-    candidates = candidates.concat(safelyFetch('arxiv', fetchArxiv, errors));
-  }
-  if (SOURCES_ENABLED.crossref) {
-    candidates = candidates.concat(safelyFetch('crossref', fetchCrossref, errors));
-  }
-  if (SOURCES_ENABLED.philpapers) {
-    candidates = candidates.concat(safelyFetch('philpapers', fetchPhilPapers, errors));
-  }
-  if (SOURCES_ENABLED.openalex) {
-    candidates = candidates.concat(safelyFetch('openalex', fetchOpenAlex, errors));
-  }
+  const candidates = fetchAllEnabledSources(errors);
 
   const newPapers = filterToNewPapers(candidates);
   const relevant = scoreAndTierPapers(filterToRelevantPapers(newPapers));

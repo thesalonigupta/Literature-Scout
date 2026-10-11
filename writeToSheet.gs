@@ -17,7 +17,8 @@
  * position on purpose: existing rows keep their data exactly where it is,
  * so no migration is needed on a sheet that already has history in it. Run
  * setupDigestSheet() once to add the two new headers, then
- * backfillRelevanceScores() to fill them in for rows that predate this change.
+ * backfillRelevanceScores() to fill them in for rows that predate this change
+ * (or backfillBlankRelevanceScores() to fill only the rows that are empty).
  */
 
 /**
@@ -68,7 +69,7 @@ const ABSTRACT_SNIPPET_MAX_CHARS = 400;
 
 /**
  * Gets the Digest sheet object, creating it if it doesn't exist yet.
- * @return {GoogeAppsScript.Spreadsheet.Sheet}
+ * @return {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getDigestSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -175,14 +176,24 @@ function setupDigestSheet() {
 }
 
 /**
+ * Fills in score and tier for rows that have none yet and leaves every other
+ * row alone. The editor's Run button can't pass arguments, so this is the
+ * one to run for "fill only the blanks".
+ */
+function backfillBlankRelevanceScores() {
+  backfillRelevanceScores(true);
+}
+
+/**
  * ONE-TIME MIGRATION HELPER — scores and tiers rows that are already in the
  * Digest sheet.
  *
  * Run this once after setupDigestSheet() so that existing history gets the
- * same Relevance Score / Relevance Tier treatment as new rows. Safe to run
- * again later: it recomputes every row from scratch against whatever is
- * currently in config.gs, which is also how you re-tier the whole sheet
- * after changing the weights.
+ * same Relevance Score / Relevance Tier treatment as new rows. Called with
+ * no argument (as the editor's Run button does) it rescores EVERY row from
+ * scratch against whatever is currently in config.gs, which is also how you
+ * re-tier the whole sheet after changing the weights. Use
+ * backfillBlankRelevanceScores() to fill only empty rows.
  *
  * Two things to know about the numbers it produces for old rows:
  *   - It scores against the TRUNCATED abstract snippet in column D, not the
@@ -190,13 +201,14 @@ function setupDigestSheet() {
  *     whose field vocabulary sits in its last paragraph will score lower here
  *     than the same paper would if it arrived today. Treat backfilled rows
  *     as slightly conservative rather than exactly comparable.
- *   - It recomputes matched topics from the title and snippet rather than
- *     reading column H, so the tiers reflect the CURRENT topic list. That's
- *     usually what you want, but it does mean the Matched Topics column and
- *     the score can disagree on rows added before a topic was renamed.
+ *   - It recomputes matched terms from the title and snippet, then adds any
+ *     terms the original run recorded in column H (found in the full
+ *     abstract) that are still in the current topic lists. Terms that have
+ *     since been renamed or removed are ignored.
  *
- * @param {boolean=} onlyBlankRows - If true, skips rows that already have a
- *        tier. Defaults to false (rescore everything).
+ * @param {boolean=} onlyBlankRows - If exactly true, skips rows that already
+ *        have a tier. Anything else (including no argument) rescores
+ *        everything.
  */
 function backfillRelevanceScores(onlyBlankRows) {
   const sheet = getDigestSheet();
@@ -218,7 +230,7 @@ function backfillRelevanceScores(onlyBlankRows) {
   values.forEach(function(row) {
     const existingTier = String(row[DIGEST_COLUMNS.relevanceTier - 1] || '').trim();
 
-    if (onlyBlankRows && existingTier) {
+    if (onlyBlankRows === true && existingTier) {
       scoreColumn.push([row[DIGEST_COLUMNS.relevanceScore - 1]]);
       tierColumn.push([existingTier]);
       tierCounts.skipped++;
@@ -232,8 +244,19 @@ function backfillRelevanceScores(onlyBlankRows) {
       doi: String(row[DIGEST_COLUMNS.doi - 1] || '') || null,
     };
 
+    // Terms found in the snippet, plus any the original run recorded in
+    // column H from the FULL abstract (the snippet is cut at 400 chars).
     const relevance = checkRelevance(paper);
-    const scored = scorePaper(paper, relevance.matches);
+    const recorded = matchesFromDisplayStrings(
+      String(row[DIGEST_COLUMNS.matchedTopics - 1] || '').split(', '),
+      paper.title
+    );
+    const merged = relevance.matches.slice();
+    recorded.forEach(function(match) {
+      const already = merged.some(function(m) { return m.label === match.label; });
+      if (!already) merged.push(match);
+    });
+    const scored = scorePaper(paper, merged);
 
     scoreColumn.push([scored.score]);
     tierColumn.push([scored.tier]);
